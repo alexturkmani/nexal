@@ -37,7 +37,7 @@ class NavViewModel @Inject constructor(
                     rewardRepository.premium = signedIn?.second == true
                     // Premium + connected: a quiet Health Connect sync on every app open.
                     if (signedIn?.second == true) {
-                        runCatching { if (healthConnect.isAvailable() && healthConnect.hasAllPermissions()) healthConnect.sync() }
+                        runCatching { if (healthConnect.isConnected()) healthConnect.sync() }
                     }
                 }
         }

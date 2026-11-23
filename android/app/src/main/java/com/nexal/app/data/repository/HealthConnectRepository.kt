@@ -19,12 +19,21 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /** What a Health Connect sync did, for the confirmation message. */
-data class HealthSyncResult(val weightsImported: Int, val workoutsExported: Int, val stepsToday: Long)
+data class HealthSyncResult(
+    val weightsImported: Int,
+    val weightsExported: Int,
+    val workoutsExported: Int,
+    /** Null when Nexal isn't allowed to read steps. */
+    val stepsToday: Long?
+)
+
+enum class HealthStatus { AVAILABLE, NEEDS_INSTALL, UNSUPPORTED }
 
 /**
  * Premium sync with Android Health Connect: steps and weight come in, Nexal
@@ -44,34 +53,58 @@ class HealthConnectRepository @Inject constructor(
         HealthPermission.getWritePermission(ExerciseSessionRecord::class),
     )
 
+    private val readSteps = HealthPermission.getReadPermission(StepsRecord::class)
+    private val readWeight = HealthPermission.getReadPermission(WeightRecord::class)
+    private val writeWeight = HealthPermission.getWritePermission(WeightRecord::class)
+    private val writeExercise = HealthPermission.getWritePermission(ExerciseSessionRecord::class)
+
     private val prefs = context.getSharedPreferences("health_connect", Context.MODE_PRIVATE)
 
+    /** Where this phone stands with Health Connect. */
+    fun status(): HealthStatus = when (HealthConnectClient.getSdkStatus(context, PROVIDER)) {
+        HealthConnectClient.SDK_AVAILABLE -> HealthStatus.AVAILABLE
+        HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> HealthStatus.NEEDS_INSTALL
+        else -> HealthStatus.UNSUPPORTED
+    }
+
     /** Health Connect is installed (or built in) and usable on this phone. */
-    fun isAvailable(): Boolean =
-        HealthConnectClient.getSdkStatus(context) == HealthConnectClient.SDK_AVAILABLE
+    fun isAvailable(): Boolean = status() == HealthStatus.AVAILABLE
 
     private fun client(): HealthConnectClient? =
         if (isAvailable()) HealthConnectClient.getOrCreate(context) else null
 
-    suspend fun hasAllPermissions(): Boolean {
-        val client = client() ?: return false
-        return client.permissionController.getGrantedPermissions().containsAll(permissions)
+    /** The Health Connect permissions the user has given Nexal. */
+    suspend fun grantedPermissions(): Set<String> {
+        val client = client() ?: return emptySet()
+        return runCatching { client.permissionController.getGrantedPermissions() }
+            .getOrDefault(emptySet())
+            .intersect(permissions)
     }
 
-    /** Two-way sync. Safe to repeat: workouts are exported once, weights are matched by date. */
+    suspend fun hasAllPermissions(): Boolean = grantedPermissions().containsAll(permissions)
+
+    /** Connected means at least one permission, so there's something to sync. */
+    suspend fun isConnected(): Boolean = grantedPermissions().isNotEmpty()
+
+    /**
+     * Two-way sync of whatever the user allowed. Safe to repeat: workouts are
+     * exported once, weights are matched by date.
+     */
     suspend fun sync(): HealthSyncResult {
         val client = client() ?: throw IllegalStateException("Health Connect isn't available on this phone.")
-        if (!hasAllPermissions()) throw IllegalStateException("Allow Nexal in Health Connect first.")
+        val granted = grantedPermissions()
+        if (granted.isEmpty()) throw IllegalStateException("Allow Nexal in Health Connect first.")
 
         val zone = ZoneId.systemDefault()
         val now = Instant.now()
+        val since = now.minus(30, ChronoUnit.DAYS)
+        val sinceDate = since.atZone(zone).toLocalDate().toString()
 
         // Weight in: the latest reading per day from the last 30 days that Nexal doesn't have yet.
-        val since = now.minus(30, ChronoUnit.DAYS)
-        val weights = client.readRecords(
-            ReadRecordsRequest(WeightRecord::class, TimeRangeFilter.between(since, now))
-        ).records
-        val existing = nutritionRepo.observeWeightEntries().first().map { it.date }.toSet()
+        val weights = if (readWeight in granted) {
+            client.readRecords(ReadRecordsRequest(WeightRecord::class, TimeRangeFilter.between(since, now))).records
+        } else emptyList()
+        val existing = nutritionRepo.observeWeightEntries().first().map { it.date.take(10) }.toSet()
         val newest = weights
             .groupBy { it.time.atZone(zone).toLocalDate().toString() }
             .mapValues { (_, day) -> day.maxBy { it.time } }
@@ -80,37 +113,57 @@ class HealthConnectRepository @Inject constructor(
             nutritionRepo.logWeight(WeightEntry(date = date, weight = record.weight.inKilograms))
         }
 
-        // Weight out: Nexal weigh-ins Health Connect doesn't have.
-        val healthDates = weights.map { it.time.atZone(zone).toLocalDate().toString() }.toSet()
-        val toExport = nutritionRepo.observeWeightEntries().first().filter { it.date !in healthDates && it.date >= since.atZone(zone).toLocalDate().toString() }
-        if (toExport.isNotEmpty()) {
-            client.insertRecords(toExport.mapNotNull { entry ->
+        // Weight out: Nexal weigh-ins Health Connect doesn't have. Without read
+        // access we can't see what's there, so each day is only ever sent once.
+        var weightsExported = 0
+        if (writeWeight in granted) {
+            val healthDates = weights.map { it.time.atZone(zone).toLocalDate().toString() }.toSet()
+            val sentBefore = prefs.getStringSet(KEY_EXPORTED_WEIGHTS, emptySet()).orEmpty()
+            val toExport = nutritionRepo.observeWeightEntries().first().filter {
+                val day = it.date.take(10)
+                day >= sinceDate && day !in healthDates && day !in newest.keys && day !in sentBefore
+            }
+            val records = toExport.mapNotNull { entry ->
                 val day = runCatching { LocalDate.parse(entry.date.take(10)) }.getOrNull() ?: return@mapNotNull null
-                val at = day.atTime(8, 0).atZone(zone)
+                if (entry.weight <= 0.0) return@mapNotNull null
+                // Morning weigh-in, but not in the future (today before 8 am).
+                val at = minOf(day.atTime(8, 0).atZone(zone), ZonedDateTime.now(zone).minusMinutes(1))
                 WeightRecord(
                     time = at.toInstant(),
                     zoneOffset = at.offset,
-                    weight = Mass.kilograms(entry.weight),
+                    weight = Mass.kilograms(entry.weight.coerceIn(1.0, 999.0)),
                     metadata = Metadata.manualEntry()
                 )
-            })
+            }
+            if (records.isNotEmpty()) {
+                client.insertRecords(records)
+                weightsExported = records.size
+                prefs.edit().putStringSet(KEY_EXPORTED_WEIGHTS, sentBefore + toExport.map { it.date.take(10) }).apply()
+            }
         }
 
         // Workouts out: each logged session once.
-        val exported = prefs.getStringSet(KEY_EXPORTED, emptySet()).orEmpty()
-        val sessions = workoutRepo.observeLogs().first().filter { it.id.isNotBlank() && it.id !in exported }
-        if (sessions.isNotEmpty()) {
-            client.insertRecords(sessions.mapNotNull { it.toSession(zone) })
-            prefs.edit().putStringSet(KEY_EXPORTED, exported + sessions.map { it.id }).apply()
+        var workoutsExported = 0
+        if (writeExercise in granted) {
+            val exported = prefs.getStringSet(KEY_EXPORTED, emptySet()).orEmpty()
+            val sessions = workoutRepo.observeLogs().first().filter { it.id.isNotBlank() && it.id !in exported }
+            val records = sessions.mapNotNull { it.toSession(zone) }
+            if (records.isNotEmpty()) client.insertRecords(records)
+            if (sessions.isNotEmpty()) {
+                prefs.edit().putStringSet(KEY_EXPORTED, exported + sessions.map { it.id }).apply()
+            }
+            workoutsExported = records.size
         }
 
-        val startOfDay = LocalDate.now().atStartOfDay(zone).toInstant()
-        val steps = client.aggregate(
-            AggregateRequest(setOf(StepsRecord.COUNT_TOTAL), TimeRangeFilter.between(startOfDay, now))
-        )[StepsRecord.COUNT_TOTAL] ?: 0L
+        val steps = if (readSteps in granted) {
+            val startOfDay = LocalDate.now().atStartOfDay(zone).toInstant()
+            client.aggregate(
+                AggregateRequest(setOf(StepsRecord.COUNT_TOTAL), TimeRangeFilter.between(startOfDay, now))
+            )[StepsRecord.COUNT_TOTAL] ?: 0L
+        } else null
 
         prefs.edit().putLong(KEY_LAST_SYNC, now.toEpochMilli()).apply()
-        return HealthSyncResult(newest.size, sessions.size, steps)
+        return HealthSyncResult(newest.size, weightsExported, workoutsExported, steps)
     }
 
     /** Last successful sync, epoch millis, or 0. */
@@ -119,8 +172,11 @@ class HealthConnectRepository @Inject constructor(
     private fun WorkoutLog.toSession(zone: ZoneId): ExerciseSessionRecord? {
         val day = runCatching { LocalDate.parse(date.take(10)) }.getOrNull() ?: return null
         val minutes = (duration ?: 45).coerceIn(5, 240).toLong()
-        val start = day.atTime(18, 0).atZone(zone)
-        val end = start.plusMinutes(minutes)
+        // Logs only carry a date. Place the session in the evening, but never in
+        // the future: Health Connect rejects future records and the whole insert fails.
+        val latestEnd = ZonedDateTime.now(zone).minusMinutes(1)
+        val end = minOf(day.atTime(18, 0).atZone(zone).plusMinutes(minutes), latestEnd)
+        val start = end.minusMinutes(minutes)
         return ExerciseSessionRecord(
             startTime = start.toInstant(),
             startZoneOffset = start.offset ?: ZoneOffset.UTC,
@@ -132,8 +188,11 @@ class HealthConnectRepository @Inject constructor(
         )
     }
 
-    private companion object {
-        const val KEY_EXPORTED = "exported_workouts"
-        const val KEY_LAST_SYNC = "last_sync"
+    companion object {
+        /** The Health Connect app on Android 13 and below; built in from Android 14. */
+        const val PROVIDER = "com.google.android.apps.healthdata"
+        private const val KEY_EXPORTED = "exported_workouts"
+        private const val KEY_EXPORTED_WEIGHTS = "exported_weights"
+        private const val KEY_LAST_SYNC = "last_sync"
     }
 }

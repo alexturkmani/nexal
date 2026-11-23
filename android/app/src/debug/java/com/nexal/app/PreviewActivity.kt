@@ -56,6 +56,9 @@ import com.nexal.app.util.todayFormatted
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 
 /**
  * Debug builds only: opens one real screen with sample local data, so the design
@@ -119,6 +122,9 @@ class PreviewActivity : ComponentActivity() {
             "diary" -> NutritionScreen(onNavigateToScanner = {}, isPremium = true)
             "progress" -> ProgressScreen(isPremium = true)
             "profile" -> ProfileScreen(onNavigateToSubscription = {}, onBack = {})
+            "health" -> androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().padding(16.dp)) {
+                com.nexal.app.ui.profile.HealthConnectCard(onUpgrade = {}, forcePremium = true)
+            }
             "subscription" -> SubscriptionScreen(onBack = {})
             "paywall" -> PaywallScreen(onBack = {}, onSubscribed = {})
             "paywall_setup" -> PaywallScreen(onBack = {}, onSubscribed = {}, afterSetup = true)

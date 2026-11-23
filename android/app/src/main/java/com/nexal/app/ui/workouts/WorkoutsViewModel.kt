@@ -36,6 +36,9 @@ class WorkoutsViewModel @Inject constructor(
     private val authRepo: AuthRepository
 ) : ViewModel() {
 
+    /** Free AI actions left; null for Premium. */
+    val freeCreditsLeft: StateFlow<Int?> = aiRepo.freeCreditsLeft
+
     private val _uiState = MutableStateFlow(WorkoutsUiState())
     val uiState: StateFlow<WorkoutsUiState> = _uiState.asStateFlow()
 
@@ -74,13 +77,8 @@ class WorkoutsViewModel @Inject constructor(
 
     fun generatePlan() {
         viewModelScope.launch {
-            // Keep this gate synchronized with the server's status + expiry rule.
+            // Free accounts generate on their free AI actions; the server enforces the allowance.
             authRepo.refreshUserInfo()
-            val auth = authRepo.authState.value as? AuthState.Authenticated
-            if (auth?.isPremium != true) {
-                _uiState.update { it.copy(error = "Premium is required to generate AI workout plans.") }
-                return@launch
-            }
             val profile = profileRepo.getProfile()
             if (profile == null || !profile.onboardingCompleted) {
                 _uiState.update {

@@ -73,14 +73,39 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nexal.app.R
+import com.nexal.app.ui.theme.Accent
 import com.nexal.app.ui.theme.AccentBright
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.ui.graphics.luminance
 import com.nexal.app.ui.theme.HeroInk
 import com.nexal.app.ui.theme.Slate950
 import com.nexal.app.ui.theme.photoScreensShowing
 
-/** Text tones for anything drawn over a photo; never theme colours, the photo is always dark. */
-val GlassText = Color.White
-val GlassTextMuted = Color.White.copy(alpha = 0.68f)
+/**
+ * Photo screens follow the app theme: dark glass on a dark photo, or white
+ * frosted glass on a bright, cream-washed photo in light mode.
+ */
+private val LocalLightGlass = staticCompositionLocalOf { false }
+
+private val LightInk = Color(0xFF101113)
+
+/** Text over a photo: white on dark glass, ink on light glass. */
+val GlassText: Color
+    @Composable @ReadOnlyComposable get() = if (LocalLightGlass.current) LightInk else Color.White
+val GlassTextMuted: Color
+    @Composable @ReadOnlyComposable get() =
+        if (LocalLightGlass.current) LightInk.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.68f)
+
+/** The accent on glass: bright lime on dark, deeper green on light so it keeps its contrast. */
+@Composable
+@ReadOnlyComposable
+fun glassAccent(): Color = if (LocalLightGlass.current) Accent else AccentBright
+
+/** True when photo screens are showing their light version. */
+@Composable
+@ReadOnlyComposable
+fun isLightGlass(): Boolean = LocalLightGlass.current
+
 private val GlassFill = Color(0xFF15161A).copy(alpha = 0.78f)
 private val GlassFillTop = Color(0xFF2A2C31).copy(alpha = 0.80f)
 
@@ -89,6 +114,17 @@ private val GlassEdge = Brush.verticalGradient(
     listOf(AccentBright.copy(alpha = 0.62f), AccentBright.copy(alpha = 0.10f))
 )
 private val GlassSheen = Brush.verticalGradient(listOf(GlassFillTop, GlassFill))
+
+private val LightGlassEdge = Brush.verticalGradient(
+    listOf(Accent.copy(alpha = 0.55f), Accent.copy(alpha = 0.12f))
+)
+private val LightGlassSheen = Brush.verticalGradient(
+    listOf(Color.White.copy(alpha = 0.86f), Color.White.copy(alpha = 0.74f))
+)
+private val LightGlassVeil = Brush.verticalGradient(
+    listOf(Color.White.copy(alpha = 0.62f), Color.White.copy(alpha = 0.74f))
+)
+private val LightPhotoWash = Color(0xFFF4F2EC)
 
 /** Neutral graphite laid over every photo, so white text stays readable on bright areas. */
 private val PhotoTint = Color(0xFF0A0B0D)
@@ -124,16 +160,20 @@ private class GlassBackdrop {
 
 private val LocalGlassBackdrop = staticCompositionLocalOf<GlassBackdrop?> { null }
 
+/** True inside a PhotoBackdrop, where surfaces are dark glass in both themes. */
+@Composable
+fun isOnPhoto(): Boolean = LocalGlassBackdrop.current != null
+
 private val GrainBrush by lazy {
     ShaderBrush(ImageShader(glassGrain, TileMode.Repeated, TileMode.Repeated))
 }
 
 /** Draws the part of the blurred photo that lies behind a card whose top-left corner is at [card]. */
-private fun DrawScope.drawFrost(backdrop: GlassBackdrop, card: Offset) {
+private fun DrawScope.drawFrost(backdrop: GlassBackdrop, card: Offset, light: Boolean) {
     val area = backdrop.size
     val image = backdrop.image
     if (area.width <= 0f || image == null) {
-        drawRect(GlassSheen)
+        drawRect(if (light) LightGlassSheen else GlassSheen)
         return
     }
     // Same placement as the sharp photo: ContentScale.Crop, aligned to the top centre.
@@ -149,7 +189,7 @@ private fun DrawScope.drawFrost(backdrop: GlassBackdrop, card: Offset) {
         colorFilter = GlassFrost,
         filterQuality = FilterQuality.High
     )
-    drawRect(GlassVeil)
+    drawRect(if (light) LightGlassVeil else GlassVeil)
     drawRect(GrainBrush)
 }
 
@@ -190,9 +230,12 @@ fun PhotoBackdrop(
 ) {
     val sharp = ImageBitmap.imageResource(photo)
     val backdrop = remember(photo) { GlassBackdrop() }
-    DisposableEffect(Unit) {
-        photoScreensShowing.intValue++
-        onDispose { photoScreensShowing.intValue-- }
+    // Follows the theme; the paywall wraps itself in the dark scheme to stay dark.
+    val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    // Only dark photos need light status bar icons.
+    DisposableEffect(light) {
+        if (!light) photoScreensShowing.intValue++
+        onDispose { if (!light) photoScreensShowing.intValue-- }
     }
     LaunchedEffect(photo) {
         backdrop.image = withContext(Dispatchers.Default) { frostedCopy(photo, sharp) }
@@ -200,7 +243,7 @@ fun PhotoBackdrop(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Slate950)
+            .background(if (light) LightPhotoWash else Slate950)
             .onGloballyPositioned {
                 backdrop.origin = it.positionInRoot()
                 backdrop.size = it.size.toSize()
@@ -219,27 +262,38 @@ fun PhotoBackdrop(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    Brush.verticalGradient(
-                        0f to PhotoTint.copy(alpha = 0.62f),
-                        0.4f to PhotoTint.copy(alpha = 0.74f),
-                        1f to Slate950.copy(alpha = 0.97f)
-                    )
+                    if (light) {
+                        Brush.verticalGradient(
+                            0f to LightPhotoWash.copy(alpha = 0.50f),
+                            0.4f to LightPhotoWash.copy(alpha = 0.66f),
+                            1f to LightPhotoWash.copy(alpha = 0.96f)
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            0f to PhotoTint.copy(alpha = 0.62f),
+                            0.4f to PhotoTint.copy(alpha = 0.74f),
+                            1f to Slate950.copy(alpha = 0.97f)
+                        )
+                    }
                 )
         )
-        val scheme = MaterialTheme.colorScheme.copy(
-            onBackground = GlassText,
-            onSurface = GlassText,
-            onSurfaceVariant = GlassTextMuted,
-            surface = HeroInk,
-            background = Slate950,
-            primary = GlassText,
-            onPrimary = HeroInk,
-        )
-        MaterialTheme(colorScheme = scheme) {
-            CompositionLocalProvider(
-                LocalContentColor provides GlassText,
-                LocalGlassBackdrop provides backdrop
-            ) { content() }
+        CompositionLocalProvider(LocalLightGlass provides light) {
+            val text = GlassText
+            val scheme = MaterialTheme.colorScheme.copy(
+                onBackground = text,
+                onSurface = text,
+                onSurfaceVariant = GlassTextMuted,
+                surface = if (light) Color.White else HeroInk,
+                background = if (light) LightPhotoWash else Slate950,
+                primary = text,
+                onPrimary = if (light) Color.White else HeroInk,
+            )
+            MaterialTheme(colorScheme = scheme) {
+                CompositionLocalProvider(
+                    LocalContentColor provides text,
+                    LocalGlassBackdrop provides backdrop
+                ) { content() }
+            }
         }
     }
 }
@@ -255,6 +309,7 @@ fun GlassCard(
     val shape = RoundedCornerShape(cornerRadius)
     val source = remember { MutableInteractionSource() }
     val backdrop = LocalGlassBackdrop.current
+    val light = LocalLightGlass.current
     // Kept out of composition: scrolling only redraws the card, it doesn't recompose it.
     val position = remember { mutableStateOf(Offset.Zero) }
     Column(
@@ -265,13 +320,13 @@ fun GlassCard(
             .onGloballyPositioned { position.value = it.positionInRoot() }
             .drawBehind {
                 if (backdrop != null) {
-                    drawFrost(backdrop, position.value)
+                    drawFrost(backdrop, position.value, light)
                 } else {
-                    drawRect(GlassSheen)
+                    drawRect(if (light) LightGlassSheen else GlassSheen)
                 }
             }
             .liquidSheen(cornerRadius)
-            .border(BorderStroke(1.dp, GlassEdge), shape)
+            .border(BorderStroke(1.dp, if (light) LightGlassEdge else GlassEdge), shape)
             .then(if (onClick != null) Modifier.clickable(source, ripple(), onClick = onClick) else Modifier),
         content = content
     )
@@ -289,8 +344,8 @@ fun GlassIconButton(
         modifier = modifier
             .size(46.dp)
             .clip(CircleShape)
-            .background(GlassSheen)
-            .border(BorderStroke(1.dp, GlassEdge), CircleShape)
+            .background(if (LocalLightGlass.current) LightGlassSheen else GlassSheen)
+            .border(BorderStroke(1.dp, if (LocalLightGlass.current) LightGlassEdge else GlassEdge), CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {

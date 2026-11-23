@@ -47,6 +47,7 @@ import com.nexal.app.ui.fasting.FastingScreen
 import com.nexal.app.ui.rewards.RewardOverlay
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.luminance
 import com.nexal.app.ui.theme.*
 import com.nexal.app.ui.workouts.*
 
@@ -184,7 +185,9 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
     RewardOverlay()
 
     Scaffold(
-        containerColor = if (currentRoute in fullBleedRoutes) Slate950 else MaterialTheme.colorScheme.background,
+        // Behind full-bleed photo screens: dark or light to match the photo's wash.
+        containerColor = if (currentRoute in fullBleedRoutes && MaterialTheme.colorScheme.background.luminance() < 0.5f) Slate950
+            else MaterialTheme.colorScheme.background,
         bottomBar = {
             AnimatedVisibility(
                 visible = showBottomBar,
@@ -201,11 +204,9 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
         NavHost(
             navController = mainNavController,
             startDestination = Screen.Dashboard.route,
-            // Photo screens run under the status bar and place their own content below it.
-            modifier = Modifier.padding(
-                top = if (currentRoute in fullBleedRoutes) 0.dp else paddingValues.calculateTopPadding(),
-                bottom = paddingValues.calculateBottomPadding()
-            ),
+            // Every screen places itself below the status bar (photo screens by hand, the
+            // rest through their TopAppBar), so adding it here as well left a double gap.
+            modifier = Modifier.padding(bottom = paddingValues.calculateBottomPadding()),
             enterTransition = { tabEnterTransition() },
             exitTransition = { tabExitTransition() },
             popEnterTransition = { tabEnterTransition() },
@@ -252,7 +253,13 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
                     },
                     onNavigateToCustom = { mainNavController.navigate(Screen.CustomWorkouts.route) },
                     onUpgrade = { mainNavController.navigate(Screen.Paywall.route) },
-                    isPremium = isPremium
+                    isPremium = isPremium,
+                    // A free user who has logged 3 workouts is hooked: show Premium once.
+                    onWorkoutMilestone = {
+                        if (!isPremium && paywallPrompt?.once("third_workout") == true) {
+                            mainNavController.navigate(Screen.Paywall.route)
+                        }
+                    }
                 )
             }
             composable(
@@ -292,12 +299,11 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
                 }
             }
             composable(Screen.Nutrition.route) {
+                // Free users scan on their free AI actions; the server enforces the allowance.
                 NutritionScreen(
-                    onNavigateToScanner = {
-                        mainNavController.navigate(
-                            if (isPremium) Screen.Scanner.route else Screen.Paywall.route
-                        )
-                    }
+                    onNavigateToScanner = { mainNavController.navigate(Screen.Scanner.route) },
+                    onUpgrade = { mainNavController.navigate(Screen.Paywall.route) },
+                    isPremium = isPremium
                 )
             }
             composable(
@@ -308,11 +314,16 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
                 popExitTransition = { popExit() }
             ) {
                 ScannerScreen(
-                    onBack = { mainNavController.popBackStack() }
+                    onBack = { mainNavController.popBackStack() },
+                    onUpgrade = { mainNavController.navigate(Screen.Paywall.route) },
+                    isPremium = isPremium
                 )
             }
             composable(Screen.Progress.route) {
-                ProgressScreen()
+                ProgressScreen(
+                    isPremium = isPremium,
+                    onUpgrade = { mainNavController.navigate(Screen.Paywall.route) }
+                )
             }
             composable(
                 route = Screen.Profile.route,
@@ -335,16 +346,22 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
                 popEnterTransition = { popEnter() },
                 popExitTransition = { popExit() }
             ) {
-                SubscriptionScreen(
-                    onBack = { mainNavController.popBackStack() }
-                )
+                // Free users get the Premium page; members manage their plan here.
+                if (isPremium) {
+                    SubscriptionScreen(onBack = { mainNavController.popBackStack() })
+                } else {
+                    PaywallScreen(
+                        onBack = { mainNavController.popBackStack() },
+                        onSubscribed = { mainNavController.popBackStack() }
+                    )
+                }
             }
             composable(
                 route = Screen.Paywall.route,
-                enterTransition = { pushEnter() },
+                enterTransition = { sheetEnter() },
                 exitTransition = { pushExit() },
                 popEnterTransition = { popEnter() },
-                popExitTransition = { popExit() }
+                popExitTransition = { sheetExit() }
             ) {
                 PaywallScreen(
                     onBack = { mainNavController.popBackStack() },
@@ -353,10 +370,10 @@ internal fun MainScaffold(isPremium: Boolean, paywallPrompt: PaywallPrompt? = nu
             }
             composable(
                 route = Screen.PaywallSetup.route,
-                enterTransition = { pushEnter() },
+                enterTransition = { sheetEnter() },
                 exitTransition = { pushExit() },
                 popEnterTransition = { popEnter() },
-                popExitTransition = { popExit() }
+                popExitTransition = { sheetExit() }
             ) {
                 PaywallScreen(
                     onBack = { mainNavController.popBackStack() },

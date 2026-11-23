@@ -2,17 +2,19 @@ import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import {
   callGemini, generateId, jsonResponse, errorResponse, corsHeaders,
   calculateMacroTargets, calculateDailyWaterIntake, calculateTDEE,
-  normalizeProfile, requirePremium,
+  normalizeProfile, requireAccess, withCredits, type Access,
 } from "../_shared/helpers.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
 
+  let access: Access | null = null;
   try {
-    const premiumError = await requirePremium(req);
-    if (premiumError) return premiumError;
 
     const body = await req.json();
+    const gate = await requireAccess(req, "meal");
+    if ("error" in gate) return gate.error;
+    access = gate.access;
     const profile = normalizeProfile(body.profile);
     const allergies = body.allergies;
     const tdee = calculateTDEE(profile);
@@ -76,8 +78,13 @@ Return JSON:
       createdAt: new Date().toISOString(),
     };
 
+    // A free credit buys a preview: breakfast only. The rest never leaves the server.
+    if (!access.isPremium) {
+      return jsonResponse(withCredits({ ...plan, meals: plan.meals.slice(0, 1), preview: true }, access));
+    }
     return jsonResponse(plan);
   } catch (error: any) {
+    await access?.refund();
     console.error("Meal plan generation error:", error);
     return errorResponse(error.message || "Failed to generate meal plan");
   }

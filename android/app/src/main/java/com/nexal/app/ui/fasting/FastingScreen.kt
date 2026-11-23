@@ -49,6 +49,7 @@ import com.nexal.app.ui.components.GlassTextMuted
 import com.nexal.app.ui.components.GradientButton
 import com.nexal.app.ui.components.PhotoBackdrop
 import com.nexal.app.ui.theme.AccentBright
+import com.nexal.app.ui.components.glassAccent
 
 @Composable
 fun FastingScreen(
@@ -93,7 +94,7 @@ private fun ActiveFastContent(state: FastingUiState, plan: FastingPlan, onEnd: (
                 Text(
                     if (state.goalReached) "GOAL REACHED" else "FASTING",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.White
+                    color = GlassText
                 )
                 Spacer(Modifier.height(6.dp))
                 RollingNumber(
@@ -180,7 +181,7 @@ private fun PlanPicker(
 private fun PlanTile(plan: FastingPlan, selected: Boolean, onClick: () -> Unit, modifier: Modifier) {
     val shape = RoundedCornerShape(22.dp)
     GlassCard(
-        modifier = if (selected) modifier.border(BorderStroke(2.dp, AccentBright), shape) else modifier,
+        modifier = if (selected) modifier.border(BorderStroke(2.dp, glassAccent()), shape) else modifier,
         onClick = onClick,
         cornerRadius = 22.dp
     ) {
@@ -192,7 +193,7 @@ private fun PlanTile(plan: FastingPlan, selected: Boolean, onClick: () -> Unit, 
                 color = GlassTextMuted
             )
             Spacer(Modifier.height(6.dp))
-            Text(plan.level, style = MaterialTheme.typography.labelSmall, color = Color.White)
+            Text(plan.level, style = MaterialTheme.typography.labelSmall, color = GlassText)
         }
     }
 }
@@ -211,7 +212,7 @@ private fun PlanGuide(plan: FastingPlan) {
                         "${index + 1}",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
+                        color = GlassText,
                         modifier = Modifier.width(22.dp)
                     )
                     Text(step, style = MaterialTheme.typography.bodySmall, color = GlassText)

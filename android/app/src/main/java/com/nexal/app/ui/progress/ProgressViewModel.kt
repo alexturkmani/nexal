@@ -2,10 +2,22 @@ package com.nexal.app.ui.progress
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.Context
+import com.nexal.app.data.repository.AiRepository
 import com.nexal.app.data.repository.NutritionRepository
 import com.nexal.app.data.repository.ProfileRepository
 import com.nexal.app.data.repository.WorkoutRepository
+import com.nexal.app.domain.model.FoodLogEntry
+import com.nexal.app.domain.model.WeeklyCheckIn
+import com.nexal.app.domain.model.WeeklyCheckInInput
+import com.nexal.app.domain.model.WeeklyNutrition
 import com.nexal.app.domain.model.WeightEntry
+import com.nexal.app.domain.model.WorkoutLog
+import com.nexal.app.util.Resource
+import com.nexal.app.util.calculateMacroTargets
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import com.nexal.app.util.generateId
 import com.nexal.app.util.todayFormatted
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,21 +47,77 @@ data class ProgressUiState(
     val avgDailyWater: Int = 0,
     // Cardio
     val cardioData: List<Triple<String, Int, Int>> = emptyList(), // day, calories, duration
-    val avgCardioCalories: Int = 0
+    val avgCardioCalories: Int = 0,
+    // Weekly AI check-in (Premium)
+    val checkIn: WeeklyCheckIn? = null,
+    val checkInLoading: Boolean = false,
+    val checkInError: String? = null
 )
+
+private val checkInJson = Json { ignoreUnknownKeys = true }
 
 @HiltViewModel
 class ProgressViewModel @Inject constructor(
     private val profileRepo: ProfileRepository,
     private val workoutRepo: WorkoutRepository,
-    private val nutritionRepo: NutritionRepository
+    private val nutritionRepo: NutritionRepository,
+    private val aiRepo: AiRepository,
+    @ApplicationContext context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProgressUiState())
     val uiState: StateFlow<ProgressUiState> = _uiState.asStateFlow()
 
+    private val prefs = context.getSharedPreferences("weekly_checkin", Context.MODE_PRIVATE)
+    private var recentWorkouts: List<WorkoutLog> = emptyList()
+    private var recentFood: List<FoodLogEntry> = emptyList()
+    private var recentWeights: List<WeightEntry> = emptyList()
+
     init {
+        _uiState.update { it.copy(checkIn = loadSavedCheckIn()) }
         loadData()
+    }
+
+    private fun loadSavedCheckIn(): WeeklyCheckIn? =
+        prefs.getString(KEY_CHECKIN, null)?.let { runCatching { checkInJson.decodeFromString<WeeklyCheckIn>(it) }.getOrNull() }
+
+    /** Premium: AI review of the last 7 days, with next week's targets. */
+    fun runWeeklyCheckIn() {
+        if (_uiState.value.checkInLoading) return
+        _uiState.update { it.copy(checkInLoading = true, checkInError = null) }
+        viewModelScope.launch {
+            val profile = profileRepo.getProfile()
+            val targets = profile?.let { calculateMacroTargets(it) }
+            val days = recentFood.map { it.date }.distinct().size
+            val input = WeeklyCheckInInput(
+                goal = profile?.fitnessGoals?.joinToString { it.name.lowercase().replace('_', ' ') }?.ifBlank { null } ?: "general fitness",
+                workoutsPlanned = profile?.gymDaysPerWeek ?: 3,
+                workouts = recentWorkouts,
+                nutrition = WeeklyNutrition(
+                    targetCalories = targets?.calories ?: 0,
+                    targetProtein = targets?.protein ?: 0,
+                    avgCalories = if (days > 0) recentFood.sumOf { it.macros.calories } / days else 0,
+                    avgProtein = if (days > 0) recentFood.sumOf { it.macros.protein } / days else 0,
+                    daysLogged = days
+                ),
+                weights = recentWeights
+            )
+            when (val result = aiRepo.weeklyCheckIn(input)) {
+                is Resource.Success -> {
+                    val checkIn = result.data.copy(createdAt = System.currentTimeMillis())
+                    prefs.edit().putString(KEY_CHECKIN, checkInJson.encodeToString(checkIn)).apply()
+                    _uiState.update { it.copy(checkIn = checkIn, checkInLoading = false) }
+                }
+                is Resource.Error -> _uiState.update {
+                    it.copy(checkInLoading = false, checkInError = result.message ?: "Couldn't run your check-in")
+                }
+                is Resource.Loading -> {}
+            }
+        }
+    }
+
+    private companion object {
+        const val KEY_CHECKIN = "last"
     }
 
     private fun loadData() {
@@ -99,6 +167,11 @@ class ProgressViewModel @Inject constructor(
                 val thisWeekLogs = workoutLogs.filter {
                     try { sdf.parse(it.date)?.after(weekStart) == true } catch (_: Exception) { false }
                 }
+
+                // Inputs for the weekly check-in: the last 7 days.
+                recentWorkouts = workoutLogs.filter { it.date.take(10) >= startDate }
+                recentFood = foodLogs
+                recentWeights = weightEntries.takeLast(14)
 
                 // Weight data
                 val weightData = weightEntries.takeLast(30).map { entry ->

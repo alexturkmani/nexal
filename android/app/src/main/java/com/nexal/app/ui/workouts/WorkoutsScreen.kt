@@ -23,6 +23,7 @@ import com.nexal.app.domain.model.WorkoutDay
 import com.nexal.app.domain.model.WorkoutLog
 import com.nexal.app.ui.components.*
 import com.nexal.app.ui.theme.*
+import com.nexal.app.util.PlanAccess
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -31,9 +32,20 @@ fun WorkoutsScreen(
     onNavigateToCustom: () -> Unit,
     onUpgrade: () -> Unit,
     isPremium: Boolean,
+    onWorkoutMilestone: () -> Unit = {},
     viewModel: WorkoutsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val freeCreditsLeft by viewModel.freeCreditsLeft.collectAsStateWithLifecycle()
+    val canTryFree = !isPremium && (freeCreditsLeft ?: 1) > 0
+    val plan = uiState.currentPlan
+    val planStart = plan?.startDate?.ifBlank { plan.createdAt }.orEmpty()
+    val planLocked = plan != null && PlanAccess.isWorkoutLocked(isPremium, planStart)
+    val planWeek = PlanAccess.workoutWeek(planStart, java.time.LocalDate.now())
+
+    LaunchedEffect(uiState.workoutLogs.size) {
+        if (uiState.workoutLogs.size >= 3) onWorkoutMilestone()
+    }
 
     val photoLabel = uiState.days.find { it.id == uiState.selectedDayId }?.dayLabel.orEmpty()
 
@@ -46,7 +58,7 @@ fun WorkoutsScreen(
                 title = { Text("Workouts", style = MaterialTheme.typography.headlineMedium) },
                 actions = {
                     TextButton(onClick = onNavigateToCustom) {
-                        Text("Custom", color = Color.White)
+                        Text("Custom", color = GlassText)
                     }
                 }
             )
@@ -56,13 +68,17 @@ fun WorkoutsScreen(
             EmptyState(
                 icon = Icons.Default.FitnessCenter,
                 title = "No Workout Plan",
-                description = if (isPremium) {
-                    "Generate an AI-powered workout plan tailored to your goals."
-                } else {
-                    "Log your own workouts free, or unlock a personalized AI plan."
+                description = when {
+                    isPremium -> "Generate an AI-powered workout plan tailored to your goals."
+                    canTryFree -> "Try a personal AI plan free: week 1 is yours to keep. Uses 1 of your free AI actions."
+                    else -> "Log your own workouts free, or unlock a personalized AI plan."
                 },
-                actionLabel = if (isPremium) "Generate Plan" else "Unlock AI Plan",
-                onAction = { if (isPremium) viewModel.generatePlan() else onUpgrade() },
+                actionLabel = when {
+                    isPremium -> "Generate Plan"
+                    canTryFree -> "Try it free"
+                    else -> "Unlock AI Plan"
+                },
+                onAction = { if (isPremium || canTryFree) viewModel.generatePlan() else onUpgrade() },
                 modifier = Modifier.padding(paddingValues),
                 error = uiState.error
             )
@@ -84,7 +100,7 @@ fun WorkoutsScreen(
                         GlassCard(modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                                if (!isPremium && err.contains("Premium", ignoreCase = true)) {
+                                if (!isPremium && err.needsPremium()) {
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Button(onClick = onUpgrade, modifier = Modifier.fillMaxWidth()) {
                                         Icon(Icons.Default.WorkspacePremium, contentDescription = null)
@@ -104,12 +120,26 @@ fun WorkoutsScreen(
                         FadeSlideIn {
                             GlassCard(modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(12.dp)) {
-                                    Text("AI Coach Notes", style = MaterialTheme.typography.labelMedium, color = Color.White)
+                                    Text("AI Coach Notes", style = MaterialTheme.typography.labelMedium, color = GlassText)
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(uiState.aiNotes, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                }
+
+                // Free preview: say what's open and what Premium adds.
+                if (!isPremium && !planLocked) {
+                    item {
+                        FreeCreditsNote(creditsLeft = freeCreditsLeft, onUpgrade = onUpgrade)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Free preview: week 1 of ${plan?.weeks ?: 6} is open. The rest of your plan unlocks with Premium.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = GlassText.copy(alpha = 0.75f)
+                        )
                         Spacer(modifier = Modifier.height(12.dp))
                     }
                 }
@@ -158,6 +188,18 @@ fun WorkoutsScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
 
+                        if (planLocked) {
+                            item {
+                                UpgradeCard(
+                                    title = "Week ${planWeek ?: 2} of your plan is locked",
+                                    message = "Your AI plan is saved. Go Premium to see this week's sets, reps and rest times and keep training on plan.",
+                                    onUpgrade = onUpgrade,
+                                    buttonText = "Unlock my plan"
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+                        }
+
                         items(selectedDay.exercises) { exercise ->
                             GlassCard(modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.padding(16.dp)) {
@@ -167,7 +209,17 @@ fun WorkoutsScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                    if (planLocked) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Lock, null, tint = glassAccent(), modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                "Sets, reps and rest with Premium",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    } else Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                         Text(
                                             "${exercise.sets} sets × ${exercise.reps}",
                                             style = MaterialTheme.typography.bodyMedium,
@@ -179,12 +231,12 @@ fun WorkoutsScreen(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                    if (!exercise.notes.isNullOrBlank()) {
+                                    if (!planLocked && !exercise.notes.isNullOrBlank()) {
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
                                             exercise.notes!!,
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = Color.White
+                                            color = GlassText
                                         )
                                     }
                                 }
@@ -192,7 +244,7 @@ fun WorkoutsScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
 
-                        item {
+                        if (!planLocked) item {
                             Spacer(modifier = Modifier.height(8.dp))
                             GradientButton(
                                 text = "Start Workout",
@@ -270,7 +322,7 @@ private fun WorkoutLogCard(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.CheckCircle, null, tint = AccentBright, modifier = Modifier.size(24.dp))
+            Icon(Icons.Default.CheckCircle, null, tint = glassAccent(), modifier = Modifier.size(24.dp))
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(dayLabel, fontWeight = FontWeight.SemiBold)
@@ -290,7 +342,7 @@ private fun WorkoutLogCard(
                     Text(
                         "${log.duration}min",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White
+                        color = GlassText
                     )
                 }
             }
@@ -312,7 +364,7 @@ private fun WorkoutLogDetailModal(
         title = "$dayLabel — ${log.date.take(10)}"
     ) {
         if (log.duration != null && log.duration > 0) {
-            Text("Duration: ${log.duration} minutes", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+            Text("Duration: ${log.duration} minutes", style = MaterialTheme.typography.bodyMedium, color = GlassText)
             Spacer(modifier = Modifier.height(12.dp))
         }
         log.exercises.forEach { exercise ->
@@ -330,7 +382,7 @@ private fun WorkoutLogDetailModal(
                         fontWeight = FontWeight.Medium
                     )
                     if (set.completed) {
-                        Icon(Icons.Default.Check, null, tint = AccentBright, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Check, null, tint = glassAccent(), modifier = Modifier.size(16.dp))
                     } else {
                         Icon(Icons.Default.Close, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                     }

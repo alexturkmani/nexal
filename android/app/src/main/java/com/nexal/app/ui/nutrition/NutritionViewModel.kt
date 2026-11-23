@@ -13,6 +13,9 @@ import com.nexal.app.domain.model.FoodLogEntry
 import com.nexal.app.domain.model.FoodSource
 import com.nexal.app.domain.model.MacroNutrients
 import com.nexal.app.domain.model.MealSlot
+import com.nexal.app.domain.model.PhotoFood
+import com.nexal.app.domain.model.PhotoMealResult
+import com.nexal.app.ui.components.needsPremium
 import com.nexal.app.domain.model.WaterLogEntry
 import com.nexal.app.domain.model.CardioLogEntry
 import com.nexal.app.domain.model.UnitSystem
@@ -48,6 +51,12 @@ data class RecentFood(
     val mealSlot: MealSlot
 )
 
+data class PhotoMealState(
+    val isLoading: Boolean = false,
+    val result: PhotoMealResult? = null,
+    val error: String? = null
+)
+
 data class NutritionUiState(
     val selectedDate: String = "",
     val weekData: List<DayData> = emptyList(),
@@ -69,7 +78,9 @@ data class NutritionUiState(
     val userWeightKg: Double = 70.0,
     val recentFoods: List<RecentFood> = emptyList(),
     val addSlot: MealSlot = MealSlot.BREAKFAST,
-    val isPremium: Boolean = false
+    val isPremium: Boolean = false,
+    /** Photo meal logging: null when the photo sheet is closed. */
+    val photo: PhotoMealState? = null
 )
 
 @HiltViewModel
@@ -83,6 +94,9 @@ class NutritionViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(NutritionUiState(selectedDate = todayFormatted()))
     val uiState: StateFlow<NutritionUiState> = _uiState.asStateFlow()
+
+    /** Free AI actions left; null for Premium. */
+    val freeCreditsLeft: StateFlow<Int?> = aiRepo.freeCreditsLeft
 
     private var lookupJob: Job? = null
     private var currentFoodName = ""
@@ -312,33 +326,107 @@ class NutritionViewModel @Inject constructor(
 
         lookupJob?.cancel()
         _uiState.update { it.copy(autoFillState = AutoFillState()) }
-        if (!_uiState.value.isPremium) return
+        // Premium fills in as you type. Free users tap "Fill with AI", so typing never spends a credit.
+        if (_uiState.value.isPremium && currentFoodName.length >= 2) runLookup(delayMs = 800)
+    }
 
-        if (currentFoodName.length >= 2) {
-            lookupJob = viewModelScope.launch {
-                delay(800)
-                _uiState.update { it.copy(autoFillState = AutoFillState(isLoading = true)) }
-                when (val result = aiRepo.lookupFoodMacros(currentFoodName, currentServingSize.ifBlank { "standard serving" })) {
-                    is Resource.Success -> {
-                        val data = result.data
-                        _uiState.update {
-                            it.copy(
-                                autoFillState = AutoFillState(
-                                    autoFilled = true,
-                                    calories = data.calories.toString(),
-                                    protein = data.protein.toString(),
-                                    carbs = data.carbs.toString(),
-                                    fats = data.fats.toString()
-                                )
+    /** Free users: estimate the macros now, on one of their free AI actions. */
+    fun fillWithAiNow() {
+        if (currentFoodName.length < 2) {
+            _uiState.update { it.copy(toast = "Type a food name first") }
+            return
+        }
+        lookupJob?.cancel()
+        runLookup(delayMs = 0)
+    }
+
+    private fun runLookup(delayMs: Long) {
+        lookupJob = viewModelScope.launch {
+            if (delayMs > 0) delay(delayMs)
+            _uiState.update { it.copy(autoFillState = AutoFillState(isLoading = true)) }
+            when (val result = aiRepo.lookupFoodMacros(currentFoodName, currentServingSize.ifBlank { "standard serving" })) {
+                is Resource.Success -> {
+                    val data = result.data
+                    _uiState.update {
+                        it.copy(
+                            autoFillState = AutoFillState(
+                                autoFilled = true,
+                                calories = data.calories.toString(),
+                                protein = data.protein.toString(),
+                                carbs = data.carbs.toString(),
+                                fats = data.fats.toString()
                             )
-                        }
+                        )
                     }
-                    is Resource.Error -> {
-                        _uiState.update { it.copy(autoFillState = AutoFillState(), toast = "Could not estimate nutrition") }
-                    }
-                    is Resource.Loading -> {}
                 }
+                is Resource.Error -> {
+                    val message = result.message.orEmpty()
+                    _uiState.update {
+                        it.copy(
+                            autoFillState = AutoFillState(),
+                            toast = if (message.needsPremium()) message else "Could not estimate nutrition"
+                        )
+                    }
+                }
+                is Resource.Loading -> {}
             }
+        }
+    }
+
+    /** Sends a meal photo for the AI to read. [jpeg] is already resized. */
+    fun analyzePhoto(jpeg: ByteArray) {
+        _uiState.update { it.copy(photo = PhotoMealState(isLoading = true)) }
+        viewModelScope.launch {
+            when (val result = aiRepo.analyzeMealPhoto(jpeg)) {
+                is Resource.Success -> _uiState.update {
+                    it.copy(
+                        photo = if (result.data.foods.isEmpty()) {
+                            PhotoMealState(error = result.data.notes.ifBlank { "No food found in that photo. Try again closer up." })
+                        } else {
+                            PhotoMealState(result = result.data)
+                        }
+                    )
+                }
+                is Resource.Error -> _uiState.update {
+                    it.copy(photo = PhotoMealState(error = result.message ?: "Couldn't read that photo"))
+                }
+                is Resource.Loading -> {}
+            }
+        }
+    }
+
+    fun photoFailed(message: String) {
+        _uiState.update { it.copy(photo = PhotoMealState(error = message)) }
+    }
+
+    fun clearPhoto() {
+        _uiState.update { it.copy(photo = null) }
+    }
+
+    /** Logs every food the AI found, in [slot]. */
+    fun addPhotoMeal(foods: List<PhotoFood>, slot: MealSlot) {
+        if (foods.isEmpty()) return
+        viewModelScope.launch {
+            foods.forEach { food ->
+                nutritionRepo.addFoodLogEntry(
+                    FoodLogEntry(
+                        id = generateId(),
+                        date = _uiState.value.selectedDate,
+                        foodName = food.name,
+                        servingSize = food.servingSize,
+                        quantity = 1,
+                        macros = food.macros,
+                        source = FoodSource.MANUAL,
+                        mealSlot = slot,
+                        createdAt = todayFormatted()
+                    )
+                )
+            }
+            _uiState.update {
+                it.copy(photo = null, toast = "${foods.size} item${if (foods.size == 1) "" else "s"} added to ${slot.label}")
+            }
+            refreshRecentFoods()
+            if (_uiState.value.selectedDate == todayFormatted()) rewards.award(RewardType.MEAL)
         }
     }
 

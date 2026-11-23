@@ -23,6 +23,8 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProgressScreen(
+    isPremium: Boolean = false,
+    onUpgrade: () -> Unit = {},
     viewModel: ProgressViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -55,6 +57,25 @@ fun ProgressScreen(
                         averageCalories = uiState.avgDailyCalories,
                         weightChange = uiState.weightChange
                     )
+                }
+            }
+            item {
+                FadeSlideIn {
+                    if (isPremium) {
+                        WeeklyCheckInCard(
+                            checkIn = uiState.checkIn,
+                            loading = uiState.checkInLoading,
+                            error = uiState.checkInError,
+                            onRun = viewModel::runWeeklyCheckIn
+                        )
+                    } else {
+                        UpgradeCard(
+                            title = "Weekly AI check-in",
+                            message = "Every week, AI reviews your training, food and weight, then sets next week's lift targets and calorie tweak.",
+                            onUpgrade = onUpgrade,
+                            icon = Icons.Default.AutoAwesome
+                        )
+                    }
                 }
             }
             item {

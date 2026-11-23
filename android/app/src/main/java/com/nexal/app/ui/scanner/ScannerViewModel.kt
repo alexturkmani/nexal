@@ -11,6 +11,7 @@ import com.nexal.app.domain.model.FoodAssessment
 import com.nexal.app.domain.model.FoodLogEntry
 import com.nexal.app.domain.model.FoodSource
 import com.nexal.app.domain.model.ScannedProduct
+import com.nexal.app.ui.components.needsPremium
 import com.nexal.app.ui.theme.SuccessGreen
 import com.nexal.app.ui.theme.WarningAmber
 import com.nexal.app.util.Resource
@@ -34,7 +35,9 @@ data class ScannerUiState(
     val assessmentError: String? = null,
     val error: String? = null,
     val toast: String? = null,
-    val addedToLog: Boolean = false
+    val addedToLog: Boolean = false,
+    /** Free account: the AI swap suggestions are Premium only. */
+    val assessmentLocked: Boolean = false
 )
 
 /**
@@ -57,11 +60,10 @@ class ScannerViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ScannerUiState())
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
+    /** Free AI actions left; null for Premium. Each scan uses one. */
+    val freeCreditsLeft: StateFlow<Int?> = aiRepo.freeCreditsLeft
+
     fun startScanning() {
-        if (!hasPremiumAccess()) {
-            _uiState.update { it.copy(error = "Premium is required for barcode scanning.") }
-            return
-        }
         _uiState.update { it.copy(scanning = true, error = null, product = null, aiAssessment = null, assessmentError = null) }
     }
 
@@ -70,10 +72,6 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onBarcodeScanned(barcode: String) {
-        if (!hasPremiumAccess()) {
-            _uiState.update { it.copy(scanning = false, error = "Premium is required for barcode scanning.") }
-            return
-        }
         _uiState.update { it.copy(scanning = false, isLoading = true) }
         viewModelScope.launch {
             when (val result = aiRepo.lookupBarcode(barcode)) {
@@ -97,13 +95,21 @@ class ScannerViewModel @Inject constructor(
                         )
                     }
 
-                    // If low protein ratio, get AI assessment
+                    // Low protein ratio: Premium gets AI swaps, free users see what they're missing.
                     if (ratio < 10) {
-                        fetchAiAssessment(product, ratio)
+                        if (hasPremiumAccess()) fetchAiAssessment(product, ratio)
+                        else _uiState.update { it.copy(assessmentLocked = true) }
                     }
                 }
                 is Resource.Error -> {
-                    _uiState.update { it.copy(isLoading = false, error = "Product not found. Try scanning again or enter manually.") }
+                    val message = result.message.orEmpty()
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = if (message.needsPremium() || message.contains("limit", ignoreCase = true)) message
+                            else "Product not found. Try scanning again or enter manually."
+                        )
+                    }
                 }
                 is Resource.Loading -> {}
             }

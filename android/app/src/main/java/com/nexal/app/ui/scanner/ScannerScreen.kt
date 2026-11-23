@@ -43,9 +43,12 @@ import com.google.mlkit.vision.common.InputImage
 @Composable
 fun ScannerScreen(
     onBack: () -> Unit,
+    onUpgrade: () -> Unit,
+    isPremium: Boolean,
     viewModel: ScannerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val freeCreditsLeft by viewModel.freeCreditsLeft.collectAsState()
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
 
     LaunchedEffect(Unit) {
@@ -77,6 +80,9 @@ fun ScannerScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (!isPremium) {
+                FreeCreditsNote(creditsLeft = freeCreditsLeft, onUpgrade = onUpgrade)
+            }
             when {
                 uiState.isLoading -> {
                     LoadingScreen(message = "Looking up product...")
@@ -99,6 +105,17 @@ fun ScannerScreen(
                             AiAssessmentCard(
                                 assessment = assessment.assessment,
                                 alternatives = assessment.alternatives
+                            )
+                        }
+                    }
+
+                    if (uiState.assessmentLocked) {
+                        FadeSlideIn(delayMs = 100) {
+                            UpgradeCard(
+                                title = "Find a higher-protein swap",
+                                message = "This product is low in protein for its calories. Premium suggests 3 better alternatives every time you scan.",
+                                onUpgrade = onUpgrade,
+                                icon = Icons.Default.AutoAwesome
                             )
                         }
                     }
@@ -140,7 +157,11 @@ fun ScannerScreen(
                                     Text(uiState.error!!, style = MaterialTheme.typography.bodyMedium)
                                 }
                                 Spacer(modifier = Modifier.height(12.dp))
-                                FitButton(text = "Try Again", onClick = { viewModel.resetAndScan() })
+                                if (!isPremium && uiState.error!!.needsPremium()) {
+                                    GradientButton(text = "Go Premium", onClick = onUpgrade, modifier = Modifier.fillMaxWidth())
+                                } else {
+                                    FitButton(text = "Try Again", onClick = { viewModel.resetAndScan() })
+                                }
                             }
                         }
                     }

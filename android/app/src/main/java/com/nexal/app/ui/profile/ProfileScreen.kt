@@ -341,6 +341,10 @@ fun ProfileScreen(
                 }
             }
 
+            // Connected apps
+            item { Text("Connected apps", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+            item { HealthConnectCard(onUpgrade = onNavigateToSubscription) }
+
             // Appearance
             item { Text("Appearance", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
             item {

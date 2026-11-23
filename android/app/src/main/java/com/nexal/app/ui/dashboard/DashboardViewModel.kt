@@ -65,6 +65,9 @@ class DashboardViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(DashboardUiState())
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
+    /** Free AI actions left; null for Premium. */
+    val freeCreditsLeft: StateFlow<Int?> get() = aiRepo.freeCreditsLeft
+
     init {
         loadDashboard()
     }

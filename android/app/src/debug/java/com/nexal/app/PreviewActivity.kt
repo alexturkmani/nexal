@@ -79,7 +79,7 @@ class PreviewActivity : ComponentActivity() {
         val screen = intent.getStringExtra("screen") ?: "home"
 
         lifecycleScope.launch {
-            seedSampleData()
+            seedSampleData(planStartedDaysAgo = if (screen == "workouts_week1") 2 else 10)
             when (screen) {
                 "after_setup" -> paywallPrompt.queue()
                 "fasting" -> fasting.end()
@@ -108,36 +108,45 @@ class PreviewActivity : ComponentActivity() {
     private fun SinglePage(screen: String) {
         when (screen) {
             "workouts" -> WorkoutsScreen({ _, _ -> }, {}, {}, isPremium = true)
+            // Free account views: plan locked after week 1, breakfast only, upgrade cards.
+            "workouts_free", "workouts_week1" -> WorkoutsScreen({ _, _ -> }, {}, {}, isPremium = false)
             "meals" -> PhotoBackdrop(R.drawable.bg_meals) { MealsScreen(isPremium = true, onUpgrade = {}) }
+            "meals_free" -> PhotoBackdrop(R.drawable.bg_meals) { MealsScreen(isPremium = false, onUpgrade = {}) }
+            "diary_free" -> NutritionScreen(onNavigateToScanner = {}, isPremium = false)
+            "progress_free" -> ProgressScreen(isPremium = false)
+            "scanner_free" -> ScannerScreen(onBack = {}, onUpgrade = {}, isPremium = false)
             "fasting", "fasting_active", "fasting_done" -> FastingScreen(onBack = {})
-            "diary" -> NutritionScreen(onNavigateToScanner = {})
-            "progress" -> ProgressScreen()
+            "diary" -> NutritionScreen(onNavigateToScanner = {}, isPremium = true)
+            "progress" -> ProgressScreen(isPremium = true)
             "profile" -> ProfileScreen(onNavigateToSubscription = {}, onBack = {})
             "subscription" -> SubscriptionScreen(onBack = {})
             "paywall" -> PaywallScreen(onBack = {}, onSubscribed = {})
             "paywall_setup" -> PaywallScreen(onBack = {}, onSubscribed = {}, afterSetup = true)
-            "paywall_priced" -> PaywallContent(
+            "paywall_priced", "paywall_monthly", "paywall_winback" -> PaywallContent(
                 state = SubscriptionUiState(
-                    hasFreeTrial = true, selectedPlan = PlanType.YEARLY,
+                    selectedPlan = if (screen == "paywall_priced") PlanType.YEARLY else PlanType.MONTHLY,
                     monthlyPrice = "$12.99", yearlyPrice = "$109.99",
                     monthlyPriceText = "$12.99/month", yearlyPriceText = "$109.99/year",
                     pricesLoaded = true, pricingChecked = true,
                     availablePlans = setOf(PlanType.MONTHLY, PlanType.YEARLY),
                     yearlyPerMonth = "$9.17", yearlySavingsPercent = 29,
+                    monthlyIntroPrice = if (screen == "paywall_winback") "$6.49" else "$4.99",
+                    introIsWinback = screen == "paywall_winback",
+                    monthlyPerWeek = "$3.00", yearlyPerWeek = "$2.12",
                     setupDays = 4, setupGoal = "Muscle Gain"
                 ),
-                afterSetup = true, devPricingFallback = false, onClose = {}, onSelectPlan = {},
+                afterSetup = false, devPricingFallback = false, onClose = {}, onSelectPlan = {},
                 onPurchase = {}, onRestore = {}, onDevSkip = {}
             )
             "custom" -> CustomWorkoutsScreen(onBack = {})
             "workout_log" -> WorkoutLogScreen(planId = "preview-plan", dayId = "d1", onBack = {})
-            "scanner" -> ScannerScreen(onBack = {})
+            "scanner" -> ScannerScreen(onBack = {}, onUpgrade = {}, isPremium = true)
             "onboarding" -> OnboardingScreen(onComplete = {})
             else -> DashboardScreen({}, {}, {}, {}, {}, {}, {}, {}, isPremium = true)
         }
     }
 
-    private suspend fun seedSampleData() {
+    private suspend fun seedSampleData(planStartedDaysAgo: Int) {
         profiles.saveProfile(
             UserProfile(
                 id = "preview", name = "Sam", weight = 72.0, height = 172.0, age = 29,
@@ -149,7 +158,8 @@ class PreviewActivity : ComponentActivity() {
         workouts.savePlan(
             WorkoutPlan(
                 id = "preview-plan",
-                aiNotes = "Sample plan for reviewing the design.",
+                startDate = java.time.Instant.now().minus(java.time.Duration.ofDays(planStartedDaysAgo.toLong())).toString(),
+                aiNotes = "Three days a week to build strength and keep cardio up. Add weight when every set feels solid.",
                 days = listOf(
                     WorkoutDay(
                         id = "d1", dayNumber = 1, dayLabel = "Upper strength",
@@ -189,14 +199,21 @@ class PreviewActivity : ComponentActivity() {
             nutrition.logWeight(WeightEntry(date = date, weight = kg))
         }
         val oats = MacroNutrients(calories = 420, protein = 24, carbs = 58, fats = 10)
+        val salad = MacroNutrients(calories = 560, protein = 46, carbs = 42, fats = 22)
+        val salmon = MacroNutrients(calories = 640, protein = 44, carbs = 60, fats = 24)
+        val yogurt = MacroNutrients(calories = 250, protein = 22, carbs = 28, fats = 6)
+        val day = MacroNutrients(calories = 1870, protein = 136, carbs = 188, fats = 62)
         nutrition.saveMealPlan(
             MealPlan(
                 id = "preview-meals", date = todayFormatted(),
                 meals = listOf(
                     Meal("m1", "Breakfast", listOf(FoodItem("f1", "Protein oats", "1 bowl", oats)), oats),
-                    Meal("m2", "Lunch", listOf(FoodItem("f2", "Chicken salad", "1 plate", oats)), oats),
+                    Meal("m2", "Lunch", listOf(FoodItem("f2", "Chicken salad", "1 plate", salad)), salad),
+                    Meal("m3", "Dinner", listOf(FoodItem("f3", "Salmon, rice and greens", "1 plate", salmon)), salmon),
+                    Meal("m4", "Snack", listOf(FoodItem("f4", "Greek yogurt and berries", "1 cup", yogurt)), yogurt),
                 ),
-                dailyTotals = oats, dailyTargets = oats, aiNotes = "Sample meals for reviewing the design.",
+                dailyTotals = day, dailyTargets = MacroNutrients(calories = 1925, protein = 140, carbs = 190, fats = 64),
+                aiNotes = "High protein to keep you full while you cut. Prep lunch and dinner on Sunday to save time.",
                 createdAt = todayFormatted()
             )
         )

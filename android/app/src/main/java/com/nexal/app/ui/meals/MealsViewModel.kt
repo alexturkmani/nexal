@@ -46,15 +46,15 @@ class MealsViewModel @Inject constructor(
         }
     }
 
+    /** Free AI actions left; null for Premium. */
+    val freeCreditsLeft: StateFlow<Int?> = aiRepo.freeCreditsLeft
+
     fun generatePlan(allergies: List<String>) {
         viewModelScope.launch {
             // Re-read the authoritative entitlement before a paid action. This
             // prevents a screen restored from the back stack using stale access.
             authRepo.refreshUserInfo()
-            if (!hasPremiumAccess()) {
-                _uiState.update { it.copy(error = "Premium is required to generate AI meal plans.") }
-                return@launch
-            }
+            // Free accounts use a free AI action and get a breakfast-only preview (server side).
             _uiState.update { it.copy(isLoading = true, error = null) }
             val profile = profileRepo.getProfile()
             if (profile == null) {
@@ -136,10 +136,6 @@ class MealsViewModel @Inject constructor(
         val selected = _uiState.value.selectedFood ?: return
         viewModelScope.launch {
             authRepo.refreshUserInfo()
-            if (!hasPremiumAccess()) {
-                _uiState.update { it.copy(error = "Premium is required for AI substitutions.") }
-                return@launch
-            }
             _uiState.update { it.copy(subLoading = true) }
             when (val result = aiRepo.getMealSubstitutions(
                 mealName = selected.first,

@@ -87,6 +87,20 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /** True when this account paid before and the subscription has since ended. */
+    suspend fun isLapsedSubscriber(): Boolean {
+        val userId = (authState.value as? AuthState.Authenticated)?.userId ?: return false
+        return try {
+            val row = postgrest.from("user_subscriptions")
+                .select { filter { eq("user_id", userId) } }
+                .decodeSingleOrNull<SubscriptionRow>()
+            val expiry = row?.expiryTime?.let { runCatching { Instant.parse(it) }.getOrNull() }
+            row != null && !(row.status == "active" && (expiry == null || expiry.isAfter(Instant.now())))
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private suspend fun checkSubscriptionStatus(userId: String): Boolean {
         return try {
             val result = postgrest.from("user_subscriptions")

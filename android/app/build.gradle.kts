@@ -24,8 +24,8 @@ android {
         applicationId = "com.nexal.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 149
-        versionName = "1.7.1"
+        versionCode = 150
+        versionName = "1.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -179,6 +179,12 @@ dependencies {
 
     // WorkManager (for background sync)
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+
+    // Health Connect: steps and weight in, workouts and weight out (Premium)
+    implementation("androidx.health.connect:connect-client:1.1.0")
+    // Health Connect pulls Guava's empty "listenablefuture" stub, which hides
+    // ListenableFuture from CameraX. The real Guava restores it; R8 drops what's unused.
+    implementation("com.google.guava:guava:33.3.1-android")
     implementation("androidx.hilt:hilt-work:1.2.0")
     ksp("androidx.hilt:hilt-compiler:1.2.0")
 

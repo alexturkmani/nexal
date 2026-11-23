@@ -46,9 +46,17 @@ private val diaryMealSlots = listOf(
 @Composable
 fun NutritionScreen(
     onNavigateToScanner: () -> Unit,
+    onUpgrade: () -> Unit = {},
+    isPremium: Boolean = false,
     viewModel: NutritionViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val freeCreditsLeft by viewModel.freeCreditsLeft.collectAsState()
+    var showPhotoModal by remember { mutableStateOf(false) }
+    val (takePhoto, pickPhoto) = rememberMealPhotoActions(
+        onJpeg = { viewModel.analyzePhoto(it) },
+        onError = { viewModel.photoFailed(it) }
+    )
     var showAddModal by remember { mutableStateOf(false) }
     var showCardioModal by remember { mutableStateOf(false) }
 
@@ -80,6 +88,10 @@ fun NutritionScreen(
                     Text("Diary", fontWeight = FontWeight.Bold, maxLines = 1)
                 },
                 actions = {
+                    SnapMealButton(onClick = {
+                        viewModel.clearPhoto()
+                        showPhotoModal = true
+                    })
                     IconButton(onClick = onNavigateToScanner) {
                         Icon(
                             Icons.Default.QrCodeScanner,
@@ -262,7 +274,34 @@ fun NutritionScreen(
                     justAddedSlot = slot
                 },
                 onFieldChange = viewModel::onFoodFieldChange,
-                autoFillState = uiState.autoFillState
+                autoFillState = uiState.autoFillState,
+                isPremium = isPremium,
+                freeCreditsLeft = freeCreditsLeft,
+                onFillWithAi = viewModel::fillWithAiNow,
+                onUpgrade = onUpgrade
+            )
+        }
+
+        if (showPhotoModal) {
+            PhotoMealModal(
+                state = uiState.photo ?: PhotoMealState(),
+                isPremium = isPremium,
+                freeCreditsLeft = freeCreditsLeft,
+                initialSlot = uiState.addSlot,
+                onTakePhoto = takePhoto,
+                onPickPhoto = pickPhoto,
+                onAdd = { result, slot ->
+                    viewModel.addPhotoMeal(result.foods, slot)
+                    showPhotoModal = false
+                },
+                onUpgrade = {
+                    showPhotoModal = false
+                    onUpgrade()
+                },
+                onDismiss = {
+                    showPhotoModal = false
+                    viewModel.clearPhoto()
+                }
             )
         }
 
@@ -721,7 +760,11 @@ private fun AddFoodModal(
     onDismiss: () -> Unit,
     onAdd: (name: String, serving: String, cal: Int, protein: Int, carbs: Int, fats: Int) -> Unit,
     onFieldChange: (field: String, value: String) -> Unit,
-    autoFillState: AutoFillState
+    autoFillState: AutoFillState,
+    isPremium: Boolean = true,
+    freeCreditsLeft: Int? = null,
+    onFillWithAi: () -> Unit = {},
+    onUpgrade: () -> Unit = {}
 ) {
     var name by remember { mutableStateOf("") }
     var servingSize by remember { mutableStateOf("") }
@@ -770,6 +813,20 @@ private fun AddFoodModal(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+
+            // Free users fill on demand, so typing never spends one of their 3 AI actions.
+            if (!isPremium && !autoFillState.isLoading && !autoFillState.autoFilled) {
+                if ((freeCreditsLeft ?: 1) > 0) {
+                    FitButton(
+                        text = "Fill with AI",
+                        onClick = onFillWithAi,
+                        variant = ButtonVariant.SECONDARY,
+                        icon = Icons.Default.AutoAwesome,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                FreeCreditsNote(creditsLeft = freeCreditsLeft, onUpgrade = onUpgrade)
+            }
 
             if (autoFillState.isLoading) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

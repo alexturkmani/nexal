@@ -390,6 +390,15 @@ verify_jwt = false
 verify_jwt = false
 [functions.nutrition-lookup]
 verify_jwt = false
+[functions.ai-photo-meal]
+verify_jwt = false
+# Retired endpoints: deployed as stubs that refuse every call.
+[functions.ai-chat]
+verify_jwt = false
+[functions.ai-photo-food]
+verify_jwt = false
+[functions.ai-progressive-overload]
+verify_jwt = false
 
 # Auth landing pages are opened from email links in a browser — no JWT is sent.
 [functions.email-confirmed]

@@ -164,29 +164,48 @@ class BillingRepository @Inject constructor(
         return "$price${getPeriodLabel(planType)}"
     }
 
-    fun hasFreeTrial(planType: PlanType = PlanType.MONTHLY): Boolean {
-        val details = productDetails ?: return false
-        val offer = getOfferForPlan(planType) ?: return false
-        return offer.pricingPhases.pricingPhaseList.any {
-            it.priceAmountMicros == 0L
-        }
-    }
+    /** Nexal sells no free trials any more; kept so older call sites read clearly. */
+    fun hasFreeTrial(planType: PlanType = PlanType.MONTHLY): Boolean = false
 
     fun isPlanAvailable(planType: PlanType): Boolean = getOfferForPlan(planType) != null
 
+    /**
+     * Set from the subscription history before prices load: a lapsed subscriber
+     * is offered the win-back price instead of the new-customer intro.
+     */
+    @Volatile
+    var lapsedSubscriber: Boolean = false
+
+    /** The discounted first phase of the offer for [planType], if any. */
+    fun getIntroPhase(planType: PlanType): OfferPhase? = candidateFor(planType)?.introPhase
+
+    /** True when the offer for [planType] is the comeback price for lapsed subscribers. */
+    fun isWinback(planType: PlanType): Boolean =
+        candidateFor(planType)?.tags?.contains(OFFER_TAG_WINBACK) == true
+
+    private fun candidates(): List<OfferCandidate> =
+        productDetails?.subscriptionOfferDetails.orEmpty().map { offer ->
+            OfferCandidate(
+                offerId = offer.offerId,
+                tags = offer.offerTags,
+                phases = offer.pricingPhases.pricingPhaseList.map {
+                    OfferPhase(it.priceAmountMicros, it.formattedPrice, it.billingPeriod, it.billingCycleCount, it.priceCurrencyCode)
+                },
+                token = offer.offerToken
+            )
+        }
+
+    private fun candidateFor(planType: PlanType): OfferCandidate? =
+        chooseOffer(candidates(), periodOf(planType), lapsedSubscriber)
+
+    private fun periodOf(planType: PlanType) = when (planType) {
+        PlanType.MONTHLY -> "P1M"
+        PlanType.YEARLY -> "P1Y"
+    }
+
     private fun getOfferForPlan(planType: PlanType): ProductDetails.SubscriptionOfferDetails? {
-        val offers = productDetails?.subscriptionOfferDetails ?: return null
-        val targetPeriod = when (planType) {
-            PlanType.MONTHLY -> "P1M"
-            PlanType.YEARLY -> "P1Y"
-        }
-        val matching = offers.filter { offer ->
-            offer.pricingPhases.pricingPhaseList.any { it.billingPeriod == targetPeriod }
-        }
-        // Prefer offers that include a free trial phase (e.g. free-trial-14d)
-        return matching.firstOrNull { offer ->
-            offer.pricingPhases.pricingPhaseList.any { it.priceAmountMicros == 0L }
-        } ?: matching.firstOrNull()
+        val token = candidateFor(planType)?.token ?: return null
+        return productDetails?.subscriptionOfferDetails?.firstOrNull { it.offerToken == token }
     }
 
     fun launchPurchaseFlow(

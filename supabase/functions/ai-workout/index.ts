@@ -1,17 +1,19 @@
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import {
   callGemini, generateId, jsonResponse, errorResponse, corsHeaders,
-  normalizeProfile, normalizeEnum, requirePremium,
+  normalizeProfile, normalizeEnum, requireAccess, withCredits, type Access,
 } from "../_shared/helpers.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
 
+  let access: Access | null = null;
   try {
-    const premiumError = await requirePremium(req);
-    if (premiumError) return premiumError;
 
     const body = await req.json();
+    const gate = await requireAccess(req, "workout");
+    if ("error" in gate) return gate.error;
+    access = gate.access;
     const profile = normalizeProfile(body.profile);
     const { previousLogs, assessment, currentInterval } = body;
     const gymDays = profile.gymDaysPerWeek || 5;
@@ -81,8 +83,10 @@ Return JSON:
       createdAt: new Date().toISOString(),
     };
 
-    return jsonResponse(plan);
+    // Free plans are previews: the app locks them after week 1.
+    return jsonResponse(withCredits({ ...plan, preview: !access.isPremium }, access));
   } catch (error: any) {
+    await access?.refund();
     console.error("Workout generation error:", error);
     return errorResponse(error.message || "Failed to generate workout plan");
   }

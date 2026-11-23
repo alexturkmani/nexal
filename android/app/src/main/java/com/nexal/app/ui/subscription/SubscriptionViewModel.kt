@@ -10,6 +10,8 @@ import com.nexal.app.data.repository.PlanType
 import com.nexal.app.data.repository.ProfileRepository
 import com.nexal.app.data.repository.PurchaseResult
 import com.nexal.app.domain.model.AuthState
+import com.nexal.app.data.repository.weeklyMicros
+import com.nexal.app.ui.paywall.priceText
 import com.nexal.app.ui.paywall.yearlyPerMonthText
 import com.nexal.app.ui.paywall.yearlySavingsPercent
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -53,7 +55,13 @@ data class SubscriptionUiState(
     val yearlyPerMonth: String? = null,
     val yearlySavingsPercent: Int? = null,
     val setupDays: Int = 0,
-    val setupGoal: String? = null
+    val setupGoal: String? = null,
+    /** Discounted first month, e.g. "$4.99", when the monthly offer has one. */
+    val monthlyIntroPrice: String? = null,
+    /** The discount is the comeback price for a lapsed subscriber. */
+    val introIsWinback: Boolean = false,
+    val monthlyPerWeek: String? = null,
+    val yearlyPerWeek: String? = null
 )
 
 @HiltViewModel
@@ -102,6 +110,8 @@ class SubscriptionViewModel @Inject constructor(
         }
         // Fetch localized price and trial info from Play Billing (never hardcode currency)
         viewModelScope.launch {
+            // Returning subscribers see the win-back price, so check history first.
+            billingRepository.lapsedSubscriber = authRepository.isLapsedSubscriber()
             billingRepository.queryProductDetails()
             refreshPrices()
         }
@@ -187,10 +197,7 @@ class SubscriptionViewModel @Inject constructor(
     fun selectPlan(planType: PlanType) {
         planChosen = true
         _uiState.update {
-            it.copy(
-                selectedPlan = planType,
-                hasFreeTrial = billingRepository.hasFreeTrial(planType)
-            )
+            it.copy(selectedPlan = planType, hasFreeTrial = false)
         }
     }
 
@@ -302,9 +309,21 @@ class SubscriptionViewModel @Inject constructor(
                 yearlySavingsPercent = if (monthlyMicros != null && yearlyMicros != null) {
                     yearlySavingsPercent(monthlyMicros, yearlyMicros)
                 } else null,
-                hasFreeTrial = billingRepository.hasFreeTrial(selectedPlan)
+                hasFreeTrial = false,
+                monthlyIntroPrice = billingRepository.getIntroPhase(PlanType.MONTHLY)?.formattedPrice,
+                introIsWinback = billingRepository.isWinback(PlanType.MONTHLY),
+                monthlyPerWeek = perWeek(PlanType.MONTHLY),
+                yearlyPerWeek = perWeek(PlanType.YEARLY)
             )
         }
+    }
+
+    private fun perWeek(plan: PlanType): String? {
+        val micros = billingRepository.getPriceMicros(plan) ?: return null
+        val currency = billingRepository.getCurrencyCode(plan) ?: return null
+        val period = if (plan == PlanType.MONTHLY) "P1M" else "P1Y"
+        val weekly = weeklyMicros(com.nexal.app.data.repository.OfferPhase(micros, "", period, 0)) ?: return null
+        return priceText(weekly, currency)
     }
 
     fun retryPricing() {

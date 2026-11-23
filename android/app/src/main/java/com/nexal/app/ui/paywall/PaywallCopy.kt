@@ -18,6 +18,20 @@ internal fun yearlySavingsPercent(monthlyMicros: Long, yearlyMicros: Long): Int?
     return ((fullYear - yearlyMicros) * 100 / fullYear).toInt().takeIf { it > 0 }
 }
 
+/** Any price in the currency Play charges, e.g. weekly or intro prices. */
+internal fun priceText(
+    micros: Long,
+    currencyCode: String,
+    locale: Locale = Locale.getDefault()
+): String? {
+    if (micros <= 0 || currencyCode.isBlank()) return null
+    val format = NumberFormat.getCurrencyInstance(locale)
+    return runCatching {
+        format.currency = Currency.getInstance(currencyCode)
+        format.format(micros / 1_000_000.0)
+    }.getOrNull()
+}
+
 /** A yearly price shown per month, in the currency Play charges. */
 internal fun yearlyPerMonthText(
     yearlyMicros: Long,

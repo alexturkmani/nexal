@@ -21,6 +21,7 @@ import com.nexal.app.domain.model.FoodItem
 import com.nexal.app.domain.model.Meal
 import com.nexal.app.ui.components.*
 import com.nexal.app.ui.theme.*
+import com.nexal.app.util.PlanAccess
 
 private val COMMON_ALLERGIES = listOf(
     "Dairy", "Gluten", "Nuts", "Peanuts", "Eggs",
@@ -35,6 +36,9 @@ fun MealsScreen(
     viewModel: MealsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val freeCreditsLeft by viewModel.freeCreditsLeft.collectAsState()
+    val canUseAi = isPremium || (freeCreditsLeft ?: 1) > 0
+    var showShoppingList by remember { mutableStateOf(false) }
 
     var showAllergyModal by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -67,11 +71,14 @@ fun MealsScreen(
                 },
                 actions = {
                     if (uiState.plan != null) {
+                        IconButton(onClick = { if (isPremium) showShoppingList = true else onUpgrade() }) {
+                            Icon(Icons.Default.ShoppingCart, "Shopping list", tint = GlassText)
+                        }
                         IconButton(onClick = { showDeleteConfirm = true }) {
                             Icon(Icons.Default.Delete, "Delete plan", tint = MaterialTheme.colorScheme.error)
                         }
                         IconButton(
-                            onClick = { if (isPremium) showAllergyModal = true else onUpgrade() }
+                            onClick = { if (canUseAi) showAllergyModal = true else onUpgrade() }
                         ) {
                             Icon(Icons.Default.Refresh, "New plan", tint = MaterialTheme.colorScheme.primary)
                         }
@@ -89,18 +96,23 @@ fun MealsScreen(
             EmptyState(
                 icon = Icons.Default.Restaurant,
                 title = "No Meal Plan Yet",
-                description = if (isPremium) {
-                    "Generate an AI meal plan tailored to your goals and macro targets."
-                } else {
-                    "Track meals manually in Diary, or unlock a personalized AI meal plan."
+                description = when {
+                    isPremium -> "Generate an AI meal plan tailored to your goals and macro targets."
+                    canUseAi -> "Try a personal AI meal plan free: you'll get breakfast built to your macros. Uses 1 of your free AI actions."
+                    else -> "Track meals manually in Diary, or unlock a personalized AI meal plan."
                 },
-                actionLabel = if (isPremium) "Generate Meal Plan" else "Unlock AI Meal Plan",
-                onAction = { if (isPremium) showAllergyModal = true else onUpgrade() },
+                actionLabel = when {
+                    isPremium -> "Generate Meal Plan"
+                    canUseAi -> "Try it free"
+                    else -> "Unlock AI Meal Plan"
+                },
+                onAction = { if (canUseAi) showAllergyModal = true else onUpgrade() },
                 error = uiState.error,
                 modifier = Modifier.padding(padding)
             )
         } else {
             val plan = uiState.plan!!
+            val visibleMeals = plan.meals.take(PlanAccess.visibleMealCount(isPremium, plan.meals.size))
             LazyColumn(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -137,9 +149,9 @@ fun MealsScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceEvenly
                                 ) {
-                                    MacroChip("Protein", plan.dailyTotals.protein, plan.dailyTotals.protein, MacroProtein)
-                                    MacroChip("Carbs", plan.dailyTotals.carbs, plan.dailyTotals.carbs, MacroCarbs)
-                                    MacroChip("Fat", plan.dailyTotals.fats, plan.dailyTotals.fats, MacroFat)
+                                    MacroChip("Protein", plan.dailyTotals.protein, plan.dailyTotals.protein, readable(MacroProtein))
+                                    MacroChip("Carbs", plan.dailyTotals.carbs, plan.dailyTotals.carbs, readable(MacroCarbs))
+                                    MacroChip("Fat", plan.dailyTotals.fats, plan.dailyTotals.fats, readable(MacroFat))
                                 }
                             }
                         }
@@ -162,7 +174,7 @@ fun MealsScreen(
                                         Spacer(modifier = Modifier.width(10.dp))
                                         Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
                                     }
-                                    if (!isPremium && error.contains("Premium", ignoreCase = true)) {
+                                    if (!isPremium && error.needsPremium()) {
                                         Spacer(modifier = Modifier.height(12.dp))
                                         Button(onClick = onUpgrade, modifier = Modifier.fillMaxWidth()) {
                                             Icon(Icons.Default.WorkspacePremium, contentDescription = null)
@@ -241,6 +253,10 @@ fun MealsScreen(
                     }
                 }
 
+                if (!isPremium) {
+                    item { FreeCreditsNote(creditsLeft = freeCreditsLeft, onUpgrade = onUpgrade) }
+                }
+
                 item {
                     FadeSlideIn(delayMs = 120) {
                         Text(
@@ -252,7 +268,7 @@ fun MealsScreen(
                 }
 
                 itemsIndexed(
-                    plan.meals,
+                    visibleMeals,
                     key = { _, meal -> MealsViewModel.mealKey(meal) }
                 ) { index, meal ->
                     FadeSlideIn(delayMs = 140 + index * 55) {
@@ -261,7 +277,7 @@ fun MealsScreen(
                             added = MealsViewModel.mealKey(meal) in uiState.addedMealIds,
                             onAddToLog = { viewModel.addMealToLog(meal) },
                             onSubstitute = { food ->
-                                if (isPremium) {
+                                if (canUseAi) {
                                     viewModel.selectFoodForSub(meal.name, food)
                                     subReason = ""
                                     showSubModal = true
@@ -273,8 +289,24 @@ fun MealsScreen(
                     }
                 }
 
+                // Free and lapsed accounts see breakfast; the rest of the day is Premium.
+                if (!isPremium) {
+                    item {
+                        UpgradeCard(
+                            title = "Lunch, dinner and snacks are locked",
+                            message = "Premium plans your whole day to hit your calories and macros, with swaps and a shopping list.",
+                            onUpgrade = onUpgrade,
+                            buttonText = "Unlock my full plan"
+                        )
+                    }
+                }
+
                 item { Spacer(modifier = Modifier.height(8.dp)) }
             }
+        }
+
+        if (showShoppingList && uiState.plan != null) {
+            ShoppingListModal(plan = uiState.plan!!, onDismiss = { showShoppingList = false })
         }
 
         uiState.toast?.let { message ->
@@ -419,9 +451,9 @@ private fun MealCard(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("P ${food.macros.protein}g", style = MaterialTheme.typography.labelSmall, color = MacroProtein)
-                                Text("C ${food.macros.carbs}g", style = MaterialTheme.typography.labelSmall, color = MacroCarbs)
-                                Text("F ${food.macros.fats}g", style = MaterialTheme.typography.labelSmall, color = MacroFat)
+                                Text("P ${food.macros.protein}g", style = MaterialTheme.typography.labelSmall, color = readable(MacroProtein))
+                                Text("C ${food.macros.carbs}g", style = MaterialTheme.typography.labelSmall, color = readable(MacroCarbs))
+                                Text("F ${food.macros.fats}g", style = MaterialTheme.typography.labelSmall, color = readable(MacroFat))
                             }
                         }
                         IconButton(onClick = { onSubstitute(food) }, modifier = Modifier.size(28.dp)) {
@@ -446,9 +478,9 @@ private fun MealCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                MealMacroBadge("P", "${meal.totalMacros.protein}g", MacroProtein)
-                MealMacroBadge("C", "${meal.totalMacros.carbs}g", MacroCarbs)
-                MealMacroBadge("F", "${meal.totalMacros.fats}g", MacroFat)
+                MealMacroBadge("P", "${meal.totalMacros.protein}g", readable(MacroProtein))
+                MealMacroBadge("C", "${meal.totalMacros.carbs}g", readable(MacroCarbs))
+                MealMacroBadge("F", "${meal.totalMacros.fats}g", readable(MacroFat))
             }
         }
     }
@@ -662,9 +694,9 @@ private fun SubstitutionModal(
                             }
                             sub.macros?.let { m ->
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("P:${m.protein}g", style = MaterialTheme.typography.bodySmall, color = MacroProtein)
-                                    Text("C:${m.carbs}g", style = MaterialTheme.typography.bodySmall, color = MacroCarbs)
-                                    Text("F:${m.fats}g", style = MaterialTheme.typography.bodySmall, color = MacroFat)
+                                    Text("P:${m.protein}g", style = MaterialTheme.typography.bodySmall, color = readable(MacroProtein))
+                                    Text("C:${m.carbs}g", style = MaterialTheme.typography.bodySmall, color = readable(MacroCarbs))
+                                    Text("F:${m.fats}g", style = MaterialTheme.typography.bodySmall, color = readable(MacroFat))
                                 }
                             }
                             sub.reason?.let {

@@ -6,6 +6,7 @@ import com.nexal.app.domain.model.*
 import com.nexal.app.util.Resource
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.postgrest
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -14,6 +15,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,10 +29,51 @@ private val json = Json {
     coerceInputValues = true
 }
 
+@Serializable
+private data class UsageRow(val count: Int = 0)
+
+/** Free accounts get this many AI actions for life. Matches FREE_LIFETIME_CREDITS on the server. */
+const val FREE_AI_CREDITS = 3
+
 @Singleton
 class AiRepository @Inject constructor(
     private val supabase: SupabaseClient
 ) {
+    private val _freeCreditsLeft = MutableStateFlow<Int?>(null)
+
+    /** Free AI actions left; null for Premium or before the first refresh. */
+    val freeCreditsLeft: StateFlow<Int?> = _freeCreditsLeft.asStateFlow()
+
+    /** Reads the free allowance from the server. The server is what enforces it. */
+    suspend fun refreshFreeCredits(isPremium: Boolean) {
+        if (isPremium) {
+            _freeCreditsLeft.value = null
+            return
+        }
+        val userId = supabase.auth.currentUserOrNull()?.id ?: return
+        runCatching {
+            val used = supabase.postgrest.from("ai_usage")
+                .select {
+                    filter {
+                        eq("user_id", userId)
+                        eq("feature", "free")
+                        eq("window_start", "2000-01-01")
+                    }
+                }
+                .decodeSingleOrNull<UsageRow>()?.count ?: 0
+            _freeCreditsLeft.value = (FREE_AI_CREDITS - used).coerceAtLeast(0)
+        }
+    }
+
+    /** Responses to free accounts carry freeCreditsLeft; keep the counter in step. */
+    private fun trackCredits(text: String) {
+        runCatching {
+            val left = (json.parseToJsonElement(text) as? JsonObject)
+                ?.get("freeCreditsLeft")?.jsonPrimitive?.intOrNull
+            if (left != null) _freeCreditsLeft.value = left
+        }
+    }
+
     /**
      * The gateway JWT check is disabled for ES256 compatibility, so each
      * Premium Edge Function validates this user token through Supabase Auth.
@@ -43,6 +89,7 @@ class AiRepository @Inject constructor(
             setBody(bodyObj)
         }
         val text = response.bodyAsText()
+        trackCredits(text)
         if (!response.status.isSuccess()) {
             val gatewayMsg = runCatching {
                 json.parseToJsonElement(text).jsonObject["message"]?.jsonPrimitive?.content
@@ -229,6 +276,39 @@ class AiRepository @Inject constructor(
                 )
             } ?: emptyList()
             Resource.Success(FoodAssessment(assessment, alternatives))
+        } catch (e: Exception) {
+            Resource.Error(friendlyAiError(e))
+        }
+    }
+
+    /** Estimates the foods and macros in a meal photo. [jpeg] should be at most ~1280 px. */
+    suspend fun analyzeMealPhoto(jpeg: ByteArray, note: String? = null): Resource<PhotoMealResult> {
+        return try {
+            val bodyObj = buildJsonObject {
+                put("imageBase64", JsonPrimitive(android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)))
+                put("mimeType", JsonPrimitive("image/jpeg"))
+                if (!note.isNullOrBlank()) put("note", JsonPrimitive(note))
+            }
+            val text = callFunction("ai-photo-meal", bodyObj)
+            Resource.Success(json.decodeFromString<PhotoMealResult>(text))
+        } catch (e: Exception) {
+            Resource.Error(friendlyAiError(e))
+        }
+    }
+
+    /** Premium weekly check-in from the last 7 days of logs. */
+    suspend fun weeklyCheckIn(input: WeeklyCheckInInput): Resource<WeeklyCheckIn> {
+        return try {
+            val bodyObj = buildJsonObject {
+                put("type", JsonPrimitive("weekly"))
+                put("goal", JsonPrimitive(input.goal))
+                put("workoutsPlanned", JsonPrimitive(input.workoutsPlanned))
+                put("workouts", json.encodeToJsonElement(input.workouts))
+                put("nutrition", json.encodeToJsonElement(input.nutrition))
+                put("weights", json.encodeToJsonElement(input.weights))
+            }
+            val text = callFunction("ai-assess", bodyObj)
+            Resource.Success(json.decodeFromString<WeeklyCheckIn>(text))
         } catch (e: Exception) {
             Resource.Error(friendlyAiError(e))
         }

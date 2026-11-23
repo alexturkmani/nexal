@@ -58,6 +58,7 @@ fun DashboardScreen(
     rewardViewModel: RewardViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val freeCreditsLeft by viewModel.freeCreditsLeft.collectAsStateWithLifecycle()
     val fasting by fastingViewModel.uiState.collectAsStateWithLifecycle()
     val rewardProgress by rewardViewModel.progress.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -97,7 +98,7 @@ fun DashboardScreen(
                     Text(
                         dateLabel.uppercase(Locale.getDefault()),
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White
+                        color = GlassText
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
@@ -118,15 +119,17 @@ fun DashboardScreen(
                         IconBadge(Icons.Default.WorkspacePremium, tint = GlassText)
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text("Subscribe to unlock AI plans", fontWeight = FontWeight.Bold, color = GlassText)
+                            Text("Unlock Nexal Premium", fontWeight = FontWeight.Bold, color = GlassText)
                             Text(
-                                "Get personalized workouts, meals, and barcode scanning",
+                                "Full AI plans, photo logging and weekly check-ins",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = GlassTextMuted
                             )
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                FreeCreditsNote(creditsLeft = freeCreditsLeft, onUpgrade = onUpgrade)
                 Spacer(Modifier.height(12.dp))
             }
 
@@ -152,9 +155,14 @@ fun DashboardScreen(
                                 }
                                 Spacer(Modifier.width(10.dp))
                                 Text("Level ${rewardProgress.level}", style = MaterialTheme.typography.titleMedium, color = GlassText)
+                                if (isPremium) {
+                                    Spacer(Modifier.width(8.dp))
+                                    PremiumBadge()
+                                }
                             }
                             Text(
-                                "${rewardProgress.streakDays} day streak · ${rewardProgress.xp} XP",
+                                "${rewardProgress.streakDays} day streak · ${rewardProgress.xp} XP" +
+                                    if (rewardProgress.freezeReady) " · freeze ready" else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = GlassTextMuted
                             )
@@ -232,15 +240,15 @@ fun DashboardScreen(
                             goal = uiState.calorieGoal,
                             size = 118.dp,
                             stroke = 10.dp,
-                            ringColor = AccentBright,
+                            ringColor = glassAccent(),
                             valueColor = GlassText,
                             labelColor = GlassTextMuted
                         )
                         Spacer(Modifier.width(18.dp))
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            DarkMacroRow("PROTEIN", uiState.proteinToday, uiState.proteinGoal, MacroProtein)
-                            DarkMacroRow("CARBS", uiState.carbsToday, uiState.carbsGoal, MacroCarbs)
-                            DarkMacroRow("FATS", uiState.fatsToday, uiState.fatsGoal, MacroFat)
+                            DarkMacroRow("PROTEIN", uiState.proteinToday, uiState.proteinGoal, readable(MacroProtein))
+                            DarkMacroRow("CARBS", uiState.carbsToday, uiState.carbsGoal, readable(MacroCarbs))
+                            DarkMacroRow("FATS", uiState.fatsToday, uiState.fatsGoal, readable(MacroFat))
                         }
                     }
                 }
@@ -338,10 +346,10 @@ private fun DarkMacroRow(label: String, current: Int, goal: Int, color: Color) {
     val fraction = if (goal > 0) (current.toFloat() / goal).coerceIn(0f, 1f) else 0f
     Column {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.54f))
-            Text("${current}g", style = MaterialTheme.typography.labelMedium, color = Color.White, fontWeight = FontWeight.Bold)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = GlassText.copy(alpha = 0.54f))
+            Text("${current}g", style = MaterialTheme.typography.labelMedium, color = GlassText, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(6.dp))
-        GlowBar(fraction, color = color, height = 6.dp, track = Color.White.copy(alpha = 0.12f))
+        GlowBar(fraction, color = color, height = 6.dp, track = GlassText.copy(alpha = 0.12f))
     }
 }

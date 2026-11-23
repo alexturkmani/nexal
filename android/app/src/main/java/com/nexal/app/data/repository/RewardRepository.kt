@@ -17,7 +17,12 @@ enum class RewardType(val xp: Int, val title: String, val message: String) {
     WATER(15, "Water goal hit", "Fully hydrated for today."),
 }
 
-data class RewardProgress(val xp: Int = 0, val streakDays: Int = 0) {
+data class RewardProgress(
+    val xp: Int = 0,
+    val streakDays: Int = 0,
+    /** Premium: a streak freeze is ready to cover one missed day this week. */
+    val freezeReady: Boolean = false
+) {
     val level: Int get() = RewardMath.levelFor(xp)
     val levelProgress: Float get() = RewardMath.levelProgress(xp)
 }
@@ -48,6 +53,22 @@ object RewardMath {
         return (xp - start).toFloat() / (xpForLevel(level + 1) - start)
     }
 
+    /**
+     * Like [nextStreak], but a single missed day is forgiven when a streak freeze
+     * is available. Returns the new streak and whether the freeze was spent.
+     */
+    fun nextStreakWithFreeze(
+        current: Int,
+        lastActive: LocalDate?,
+        today: LocalDate,
+        freezeAvailable: Boolean
+    ): Pair<Int, Boolean> =
+        if (freezeAvailable && current > 0 && lastActive == today.minusDays(2)) current + 1 to true
+        else nextStreak(current, lastActive, today) to false
+
+    /** Monday of [date]'s week: freezes refill once a week. */
+    fun weekKey(date: LocalDate): String = date.minusDays((date.dayOfWeek.value - 1).toLong()).toString()
+
     /** A streak grows on consecutive days, holds within a day and restarts after a gap. */
     fun nextStreak(current: Int, lastActive: LocalDate?, today: LocalDate): Int = when {
         lastActive == null -> 1
@@ -72,6 +93,17 @@ class RewardRepository @Inject constructor(
     )
     val progress: StateFlow<RewardProgress> = _progress.asStateFlow()
 
+    /** Premium members get one streak freeze a week. Set from the signed-in account. */
+    @Volatile
+    var premium: Boolean = false
+        set(value) {
+            field = value
+            _progress.value = _progress.value.copy(freezeReady = freezeAvailable(LocalDate.now()))
+        }
+
+    private fun freezeAvailable(today: LocalDate): Boolean =
+        premium && prefs.getString(KEY_FREEZE_WEEK, null) != RewardMath.weekKey(today)
+
     private val _pending = MutableStateFlow<RewardEvent?>(null)
     val pending: StateFlow<RewardEvent?> = _pending.asStateFlow()
 
@@ -83,16 +115,22 @@ class RewardRepository @Inject constructor(
         val today = LocalDate.now()
         val before = _progress.value
         val lastActive = prefs.getString(KEY_LAST_ACTIVE, null)?.let(LocalDate::parse)
-        val after = RewardProgress(
-            xp = before.xp + type.xp,
-            streakDays = RewardMath.nextStreak(before.streakDays, lastActive, today)
+        val (streak, usedFreeze) = RewardMath.nextStreakWithFreeze(
+            before.streakDays, lastActive, today, freezeAvailable(today)
         )
-        prefs.edit()
-            .putInt(KEY_XP, after.xp)
-            .putInt(KEY_STREAK, after.streakDays)
+        val editor = prefs.edit()
+        if (usedFreeze) editor.putString(KEY_FREEZE_WEEK, RewardMath.weekKey(today))
+        editor
+            .putInt(KEY_XP, before.xp + type.xp)
+            .putInt(KEY_STREAK, streak)
             .putString(KEY_LAST_ACTIVE, today.toString())
             .putString(claimKey, dedupeKey)
             .apply()
+        val after = RewardProgress(
+            xp = before.xp + type.xp,
+            streakDays = streak,
+            freezeReady = freezeAvailable(today)
+        )
 
         _progress.value = after
         _pending.value = RewardEvent(type, type.xp, after, after.level > before.level)
@@ -106,5 +144,6 @@ class RewardRepository @Inject constructor(
         const val KEY_XP = "xp"
         const val KEY_STREAK = "streak"
         const val KEY_LAST_ACTIVE = "last_active"
+        const val KEY_FREEZE_WEEK = "freeze_used_week"
     }
 }

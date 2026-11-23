@@ -1,4 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  type Feature, FREE_CREDITS_USED_MESSAGE, FREE_FEATURE_KEY, FREE_FEATURES, FREE_LIFETIME_CREDITS,
+  LIFETIME_WINDOW, PREMIUM_LIMITS, PREMIUM_ONLY_MESSAGE, premiumLimitMessage, windowStart,
+} from "./quota.ts";
 
 // Shared Gemini AI helper for all AI Edge Functions
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
@@ -41,10 +45,12 @@ export function normalizeProfile(raw: Record<string, unknown> | null | undefined
   };
 }
 
+/** One part of a Gemini request: text, or an inline image. */
+export type GeminiPart = { text: string } | { inline_data: { mime_type: string; data: string } };
+
 async function tryModel(
   model: string,
-  prompt: string,
-  systemPrompt: string,
+  parts: GeminiPart[],
   maxRetries: number,
 ): Promise<string> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -58,7 +64,7 @@ async function tryModel(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             contents: [
-              { role: "user", parts: [{ text: `${systemPrompt}\n\n${prompt}` }] },
+              { role: "user", parts },
             ],
             generationConfig: { temperature: 0.7, responseMimeType: "application/json" },
           }),
@@ -89,11 +95,16 @@ async function tryModel(
   throw new Error(`Failed after retries with ${model}`);
 }
 
-export async function callGemini(
+export function callGemini(
   prompt: string,
   systemPrompt: string,
   maxRetries = 3,
 ): Promise<string> {
+  return callGeminiParts([{ text: `${systemPrompt}\n\n${prompt}` }], maxRetries);
+}
+
+/** Like callGemini, but with several parts, e.g. an image plus instructions. */
+export async function callGeminiParts(parts: GeminiPart[], maxRetries = 3): Promise<string> {
   if (!GEMINI_API_KEY) {
     throw new Error(
       "AI is not configured. Set the GEMINI_API_KEY secret in Supabase and redeploy functions.",
@@ -103,7 +114,7 @@ export async function callGemini(
   let lastError: Error | null = null;
   for (const model of MODELS) {
     try {
-      return await tryModel(model, prompt, systemPrompt, maxRetries);
+      return await tryModel(model, parts, maxRetries);
     } catch (error: any) {
       console.warn(`Model ${model} failed: ${error.message}`);
       lastError = error;
@@ -138,31 +149,46 @@ export function errorResponse(message: string, status = 500) {
   return jsonResponse({ error: message }, status);
 }
 
+/** What the caller may do, once requireAccess has let them through. */
+export type Access = {
+  userId: string;
+  isPremium: boolean;
+  /** Free AI actions left after this one; null for Premium. */
+  freeCreditsLeft: number | null;
+  /** Give the unit back. Call it when the AI request fails. */
+  refund: () => Promise<void>;
+};
+
 /**
- * Authenticate the caller and enforce an active, unexpired Premium subscription.
+ * Authenticate the caller and take one unit of AI quota for `feature`.
+ * Premium: per-feature fair-use caps. Free: 3 AI actions for life, shared
+ * across the features in FREE_FEATURES; everything else needs Premium.
  *
  * Function gateway JWT verification stays disabled because Supabase Auth issues
  * ES256 tokens while the legacy gateway verifier rejects that algorithm. The
  * Auth API performs the authoritative token validation here instead.
  */
-export async function requirePremium(req: Request): Promise<Response | null> {
+export async function requireAccess(
+  req: Request,
+  feature: Feature,
+): Promise<{ error: Response } | { access: Access }> {
   const authHeader = req.headers.get("authorization");
   const token = authHeader?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!token) return errorResponse("Unauthorized", 401);
+  if (!token) return { error: errorResponse("Unauthorized", 401) };
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !anonKey || !serviceRoleKey) {
-    console.error("Premium authorization is missing Supabase environment variables");
-    return errorResponse("Premium authorization is unavailable", 500);
+    console.error("AI authorization is missing Supabase environment variables");
+    return { error: errorResponse("AI authorization is unavailable", 500) };
   }
 
   const authClient = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: `Bearer ${token}` } },
   });
   const { data: { user }, error: authError } = await authClient.auth.getUser(token);
-  if (authError || !user) return errorResponse("Unauthorized", 401);
+  if (authError || !user) return { error: errorResponse("Unauthorized", 401) };
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
   const { data: subscription, error: subscriptionError } = await admin
@@ -173,14 +199,56 @@ export async function requirePremium(req: Request): Promise<Response | null> {
 
   if (subscriptionError) {
     console.error("Premium subscription lookup failed:", subscriptionError.message);
-    return errorResponse("Unable to verify Premium access", 500);
+    return { error: errorResponse("Unable to verify Premium access", 500) };
   }
 
   const expiryTime = subscription?.expiry_time
     ? Date.parse(subscription.expiry_time)
     : Number.POSITIVE_INFINITY;
-  const isActive = subscription?.status === "active" && expiryTime > Date.now();
-  return isActive ? null : errorResponse("Premium subscription required", 403);
+  const isPremium = subscription?.status === "active" && expiryTime > Date.now();
+
+  if (!isPremium && !FREE_FEATURES.has(feature)) {
+    return { error: jsonResponse({ error: PREMIUM_ONLY_MESSAGE, code: "premium_required" }, 403) };
+  }
+
+  const key = isPremium ? feature : FREE_FEATURE_KEY;
+  const window = isPremium ? windowStart(PREMIUM_LIMITS[feature].window) : LIFETIME_WINDOW;
+  const limit = isPremium ? PREMIUM_LIMITS[feature].limit : FREE_LIFETIME_CREDITS;
+
+  const { data: rows, error: quotaError } = await admin.rpc("consume_ai_quota", {
+    p_user: user.id, p_feature: key, p_window: window, p_limit: limit,
+  });
+  if (quotaError) {
+    console.error("AI quota check failed:", quotaError.message);
+    return { error: errorResponse("Unable to check your AI allowance", 500) };
+  }
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  if (!row?.allowed) {
+    return {
+      error: isPremium
+        ? jsonResponse({ error: premiumLimitMessage(feature), code: "fair_use_limit" }, 429)
+        : jsonResponse({ error: FREE_CREDITS_USED_MESSAGE, code: "free_credits_used", freeCreditsLeft: 0 }, 403),
+    };
+  }
+
+  return {
+    access: {
+      userId: user.id,
+      isPremium,
+      freeCreditsLeft: isPremium ? null : Math.max(0, limit - Number(row.used)),
+      refund: async () => {
+        const { error } = await admin.rpc("refund_ai_quota", {
+          p_user: user.id, p_feature: key, p_window: window,
+        });
+        if (error) console.error("AI quota refund failed:", error.message);
+      },
+    },
+  };
+}
+
+/** Adds freeCreditsLeft to a response body for free accounts. */
+export function withCredits<T extends Record<string, unknown>>(body: T, access: Access): T {
+  return access.freeCreditsLeft == null ? body : { ...body, freeCreditsLeft: access.freeCreditsLeft };
 }
 
 // ─── Nutrition calculation helpers (ported from utils.ts) ────────────────────

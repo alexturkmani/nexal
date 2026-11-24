@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nexal.app.data.repository.AiRepository
 import com.nexal.app.data.repository.AuthRepository
+import com.nexal.app.data.repository.HealthConnectRepository
 import com.nexal.app.data.repository.NutritionRepository
 import com.nexal.app.data.repository.ProfileRepository
 import com.nexal.app.data.repository.WorkoutRepository
@@ -49,6 +50,10 @@ data class DashboardUiState(
     val isGeneratingPlans: Boolean = false,
     val firstWinMessage: String? = null,
     val promptPlayReview: Boolean = false,
+    /** Today's steps from Health Connect; null when Nexal can't read them. */
+    val stepsToday: Long? = null,
+    /** Health Connect works on this phone, but Nexal isn't allowed to read steps yet. */
+    val canConnectSteps: Boolean = false,
     // Last 7 days of intake, oldest first, as (single-letter day, calories).
     val weeklyCalories: List<Pair<String, Int>> = emptyList()
 )
@@ -59,7 +64,8 @@ class DashboardViewModel @Inject constructor(
     private val workoutRepo: WorkoutRepository,
     private val nutritionRepo: NutritionRepository,
     private val authRepo: AuthRepository,
-    private val aiRepo: AiRepository
+    private val aiRepo: AiRepository,
+    private val healthConnect: HealthConnectRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(DashboardUiState())
@@ -219,6 +225,16 @@ class DashboardViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(cardioCaloriesToday = entries.sumOf { e -> e.estimatedCaloriesBurnt })
                 }
+            }
+        }
+    }
+
+    /** Re-read steps whenever Home comes back on screen (Premium only). */
+    fun refreshSteps() {
+        viewModelScope.launch {
+            val steps = healthConnect.stepsToday()
+            _uiState.update {
+                it.copy(stepsToday = steps, canConnectSteps = steps == null && healthConnect.isAvailable())
             }
         }
     }

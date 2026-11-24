@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,6 +23,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nexal.app.R
 import com.nexal.app.data.repository.FastingMath
@@ -32,6 +36,7 @@ import com.nexal.app.ui.theme.*
 import com.nexal.app.util.PlayReviewPrompt
 import com.nexal.app.util.formatWater
 import com.nexal.app.util.formatWeight
+import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -62,6 +67,16 @@ fun DashboardScreen(
     val fasting by fastingViewModel.uiState.collectAsStateWithLifecycle()
     val rewardProgress by rewardViewModel.progress.collectAsStateWithLifecycle()
     val context = LocalContext.current
+
+    // Steps move while the app is away, so read them each time Home comes back.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, isPremium) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && isPremium) viewModel.refreshSteps()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(uiState.promptPlayReview) {
         if (uiState.promptPlayReview) {
@@ -255,6 +270,11 @@ fun DashboardScreen(
             }
             Spacer(Modifier.height(12.dp))
 
+            if (isPremium && (uiState.stepsToday != null || uiState.canConnectSteps)) {
+                StepsCard(uiState.stepsToday, onClick = onNavigateToProfile)
+                Spacer(Modifier.height(12.dp))
+            }
+
             FadeSlideIn(delayMs = 140) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -313,6 +333,32 @@ fun DashboardScreen(
                 }
             }
             Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/** Today's steps from Health Connect, or a way to connect it. Opens Profile, where it's managed. */
+@Composable
+private fun StepsCard(steps: Long?, onClick: () -> Unit) {
+    GlassCard(modifier = Modifier.fillMaxWidth(), onClick = onClick) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconBadge(Icons.AutoMirrored.Filled.DirectionsWalk, tint = GlassText)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Steps today", style = MaterialTheme.typography.labelSmall, color = GlassTextMuted)
+                Text(
+                    if (steps != null) NumberFormat.getIntegerInstance().format(steps) else "Connect Health Connect",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = GlassText
+                )
+                Text(
+                    if (steps != null) "From Health Connect" else "See your daily steps here",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = GlassTextMuted
+                )
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = GlassTextMuted)
         }
     }
 }

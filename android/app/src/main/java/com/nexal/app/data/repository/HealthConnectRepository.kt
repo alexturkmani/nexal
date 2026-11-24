@@ -14,6 +14,7 @@ import androidx.health.connect.client.units.Mass
 import com.nexal.app.domain.model.WeightEntry
 import com.nexal.app.domain.model.WorkoutLog
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import java.time.Instant
 import java.time.LocalDate
@@ -132,7 +133,8 @@ class HealthConnectRepository @Inject constructor(
                     time = at.toInstant(),
                     zoneOffset = at.offset,
                     weight = Mass.kilograms(entry.weight.coerceIn(1.0, 999.0)),
-                    metadata = Metadata.manualEntry()
+                    // A fixed ID per day: sending it again (after a reinstall) updates it, not duplicates it.
+                    metadata = Metadata.manualEntry(clientRecordId = "nexal-weight-$day")
                 )
             }
             if (records.isNotEmpty()) {
@@ -155,15 +157,30 @@ class HealthConnectRepository @Inject constructor(
             workoutsExported = records.size
         }
 
-        val steps = if (readSteps in granted) {
-            val startOfDay = LocalDate.now().atStartOfDay(zone).toInstant()
-            client.aggregate(
-                AggregateRequest(setOf(StepsRecord.COUNT_TOTAL), TimeRangeFilter.between(startOfDay, now))
-            )[StepsRecord.COUNT_TOTAL] ?: 0L
-        } else null
+        val steps = if (readSteps in granted) countStepsToday(client) else null
 
         prefs.edit().putLong(KEY_LAST_SYNC, now.toEpochMilli()).apply()
         return HealthSyncResult(newest.size, weightsExported, workoutsExported, steps)
+    }
+
+    /** Today's steps so far, or null if Nexal can't read them. Never leaves the device. */
+    suspend fun stepsToday(): Long? {
+        val client = client() ?: return null
+        if (readSteps !in grantedPermissions()) return null
+        return try {
+            countStepsToday(client)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun countStepsToday(client: HealthConnectClient): Long {
+        val startOfDay = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant()
+        return client.aggregate(
+            AggregateRequest(setOf(StepsRecord.COUNT_TOTAL), TimeRangeFilter.between(startOfDay, Instant.now()))
+        )[StepsRecord.COUNT_TOTAL] ?: 0L
     }
 
     /** Last successful sync, epoch millis, or 0. */
@@ -184,7 +201,7 @@ class HealthConnectRepository @Inject constructor(
             endZoneOffset = end.offset ?: ZoneOffset.UTC,
             exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_STRENGTH_TRAINING,
             title = dayLabel.ifBlank { "Nexal workout" },
-            metadata = Metadata.manualEntry()
+            metadata = Metadata.manualEntry(clientRecordId = "nexal-workout-$id")
         )
     }
 

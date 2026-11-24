@@ -85,6 +85,8 @@ class PreviewActivity : ComponentActivity() {
             seedSampleData(planStartedDaysAgo = if (screen == "workouts_week1") 2 else 10)
             when (screen) {
                 "after_setup" -> paywallPrompt.queue()
+                "health_seed" -> seedHealthConnect()
+                "health_count" -> countHealthConnect()
                 "fasting" -> fasting.end()
                 "fasting_active" -> fasting.start("16_8", System.currentTimeMillis() - 9L * 3_600_000L - 1_260_000L)
                 "fasting_done" -> fasting.start("16_8", System.currentTimeMillis() - 16L * 3_600_000L - 60_000L)
@@ -150,6 +152,49 @@ class PreviewActivity : ComponentActivity() {
             "onboarding" -> OnboardingScreen(onComplete = {})
             else -> DashboardScreen({}, {}, {}, {}, {}, {}, {}, {}, isPremium = true)
         }
+    }
+
+    /** Logs how many of Nexal's own records Health Connect holds, to spot duplicates. */
+    private suspend fun countHealthConnect() {
+        val client = androidx.health.connect.client.HealthConnectClient.getOrCreate(this)
+        val range = androidx.health.connect.client.time.TimeRangeFilter.after(
+            java.time.Instant.now().minus(java.time.Duration.ofDays(30))
+        )
+        val workouts = client.readRecords(
+            androidx.health.connect.client.request.ReadRecordsRequest(
+                androidx.health.connect.client.records.ExerciseSessionRecord::class, range,
+                setOf(androidx.health.connect.client.records.metadata.DataOrigin(packageName))
+            )
+        ).records
+        val weights = client.readRecords(
+            androidx.health.connect.client.request.ReadRecordsRequest(
+                androidx.health.connect.client.records.WeightRecord::class, range,
+                setOf(androidx.health.connect.client.records.metadata.DataOrigin(packageName))
+            )
+        ).records
+        android.util.Log.i("HealthCount", "workouts=${workouts.size} ids=${workouts.map { it.metadata.clientRecordId }}")
+        android.util.Log.i("HealthCount", "weights=${weights.size} ids=${weights.map { it.metadata.clientRecordId }}")
+    }
+
+    /** Sample steps today and a weigh-in from two days ago, as another app would leave them. */
+    private suspend fun seedHealthConnect() {
+        val client = androidx.health.connect.client.HealthConnectClient.getOrCreate(this)
+        val now = java.time.ZonedDateTime.now()
+        val meta = androidx.health.connect.client.records.metadata.Metadata
+        client.insertRecords(
+            listOf(
+                androidx.health.connect.client.records.StepsRecord(
+                    startTime = now.minusMinutes(30).toInstant(), startZoneOffset = now.offset,
+                    endTime = now.minusMinutes(5).toInstant(), endZoneOffset = now.offset,
+                    count = 4321, metadata = meta.manualEntry()
+                ),
+                androidx.health.connect.client.records.WeightRecord(
+                    time = now.minusDays(2).toInstant(), zoneOffset = now.offset,
+                    weight = androidx.health.connect.client.units.Mass.kilograms(71.4), metadata = meta.manualEntry()
+                )
+            )
+        )
+        android.util.Log.i("HealthSeed", "seeded")
     }
 
     private suspend fun seedSampleData(planStartedDaysAgo: Int) {

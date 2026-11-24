@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug builds only: PreviewActivity writes sample steps to test Health Connect. -->
+    <uses-permission android:name="android.permission.health.WRITE_STEPS" />
+
     <application>
         <!-- Debug-only design preview; never part of a release build. -->
         <activity
